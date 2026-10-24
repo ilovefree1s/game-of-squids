@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Game of Squids</title>
+  <link rel="stylesheet" href="shared/style.css">
+</head>
+<body>
+  <header>
+    <h1 id="title">Game of Squids</h1>
+    <button id="back" hidden>← Menu</button>
+  </header>
+
+  <main>
+    <section id="menu" class="grid"></section>
+    <section id="stage" hidden>
+      <div id="hud"><span id="game-name"></span><span>Score: <b id="score">0</b></span></div>
+      <div id="game"></div>
+    </section>
+  </main>
+
+  <!-- Shared code: loads first -->
+  <script src="shared/hub.js"></script>
+
+  <!-- Mini-games: add ONE line per game, each on its own line (keeps merges clean) -->
+  <script src="minigames/snake/snake.js"></script>
+  <script src="minigames/reaction/reaction.js"></script>
+
+  <!-- Start the menu: keep this last -->
+  <script>Hub.showMenu();</script>
+</body>
+</html>

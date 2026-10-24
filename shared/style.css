@@ -1,0 +1,87 @@
+:root {
+  --bg: #14141f;
+  --panel: #22223a;
+  --text: #f2f2f7;
+  --muted: #a0a0b8;
+  --accent: #ffcc33;
+  --good: #3ddc84;
+  --bad: #ff5c5c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+}
+
+h1 { margin: 0; font-size: 1.6rem; color: var(--accent); }
+
+button {
+  font: inherit;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #111;
+  cursor: pointer;
+}
+
+main { padding: 0 24px 24px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 16px;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.card:hover { transform: translateY(-3px); }
+.card h2 { margin: 0 0 6px; font-size: 1.2rem; }
+.card p { margin: 0 0 10px; color: var(--muted); }
+.card small { color: var(--muted); }
+
+#hud {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 1.1rem;
+}
+
+#game {
+  background: var(--panel);
+  border-radius: 12px;
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 1.4rem;
+}
