@@ -41,3 +41,4 @@ minigames/
 |------|--------|--------|
 | Snake | Player 1 | playable |
 | Reaction Time | Player 2 | playable |
+| Glass Bridge | ilovefree1s | playable |
