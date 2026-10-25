@@ -5,6 +5,7 @@
 //   const c = Models.spawn("knight");       // a new animated copy, or null if it couldn't load
 //   scene.add(c.root);
 //   c.play("Running_A", { speed: 1.2 });    // crossfades from the current animation
+//   (death / lie-down animations lower the character onto the ground by themselves)
 //   c.update(dt);                           // every frame
 //
 // Animations
@@ -85,6 +86,7 @@ const Models = (() => {
     { id: "skeleton-rogue", label: "Skeleton Rogue", file: "Skeleton_Rogue" },
   ];
   const BASE = "shared/models/";
+  const LYING = /^(Death_|Lie_|Skeletons_Death|Skeletons_Inactive_Floor)/; // animations that end lying on the ground
   const HEIGHT = 1.95; // every character is scaled so its (original) body is about this tall
   // Body proportions. KayKit characters are short and chunky; these make them taller and slimmer.
   // All 1 = original look.
@@ -342,6 +344,23 @@ const Models = (() => {
       }
     }
 
+    // Lying on the ground (death / lie-down animations): the long-legs lift in makeBody() keeps a
+    // standing character's feet on the floor, but would leave a fallen one floating. While one of these
+    // animations plays, lower the character until its lowest bone is just above the floor (the floor is
+    // y = 0 of whatever root is placed in); otherwise ease back to normal height.
+    const tmpB = new THREE.Vector3();
+    function groundIfLying(dt) {
+      let goal = 0;
+      if (LYING.test(currentName)) {
+        let lo = Infinity;
+        root.updateMatrixWorld(true);
+        model.traverse((o) => { if (o.isBone) { o.getWorldPosition(tmpB); root.worldToLocal(tmpB); if (tmpB.y < lo) lo = tmpB.y; } });
+        // lo is measured from the root's own origin, so the root's height that puts that bone 4 in up is 0.1 - lo
+        if (isFinite(lo)) goal = Math.min(0, 0.1 - lo); // (bones sit about 4 in inside the body)
+      }
+      root.position.y += (goal - root.position.y) * Math.min(1, dt * 6);
+    }
+
     return {
       root,
       model,
@@ -349,7 +368,7 @@ const Models = (() => {
       play,
       hold,
       held: (hand = "right") => (held[hand] ? held[hand].obj : null),
-      update: (dt) => { mixers.forEach((mx) => mx.update(dt)); followHands(); },
+      update: (dt) => { mixers.forEach((mx) => mx.update(dt)); groundIfLying(dt); followHands(); },
       get playing() { return currentName; },
       bone: (name) => model.getObjectByName(name),
       clipLength: (name) => (clips[name] ? clips[name].duration : 0),

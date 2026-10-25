@@ -62,6 +62,11 @@ add a dated line under their heading below. Their Claude will mention it in chat
   alliances, push / sprint, and a results screen. It uses `Net`, `Input` and `Models` as they are.
   Its menu uses the same saved name (`gos:name`) and character (`gos:char`) as Glass Bridge.
   The version jumped from 0.8.2 to 0.12.0 because Red Light was bumped for each test build on its branch.
+- 2026-10-25 (from Cougar): **`shared/models.js`: fallen characters now lie on the ground.** The long-legs lift
+  in `makeBody()` kept a lying character about 1½ ft in the air. Now, while a death / lie-down animation plays
+  (`Death_…`, `Lie_…`, `Skeletons_Death…`, `Skeletons_Inactive_Floor…`), `update()` lowers `c.root` so the body
+  rests on the floor, and eases it back when another animation plays. Standing, running and jumping are
+  unchanged (tested: root height stays 0). Glass Bridge doesn't use those animations, and still loads and runs.
 - 2026-10-25 (from Cougar): **This file (`CLAUDE.md`) is new.** Claude Code reads it automatically
   at the start of every session in this repo. Both of you can leave notes for each other here.
 
