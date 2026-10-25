@@ -530,7 +530,7 @@ Hub.register({
       if (actx && actx.state === "suspended") actx.resume();
       return simulating ? null : actx; // silent during the fast-forward
     }
-    ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, audio, { passive: true }));
+    ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, () => { audio(); loadSamples(); }, { passive: true }));
     function env(g, t, a, peak, d) {
       g.gain.setValueAtTime(0.0001, t);
       g.gain.exponentialRampToValueAtTime(peak, t + a);
@@ -581,6 +581,42 @@ Hub.register({
       o.start(t); vib.start(t);
       o.stop(t + dur + 0.1); vib.stop(t + dur + 0.1);
     }
+    // ---------- recorded sounds (files in minigames/red-light/sounds/, credits in sounds/CREDITS.txt) ----------
+    const SOUND_DIR = "minigames/red-light/sounds/";
+    const SAMPLES = {
+      headshot: ["squish_06.mp3"],
+      scream: [], // add scream files here (e.g. "scream_1.mp3") once they're in the sounds folder
+    };
+    const decoded = {}; // file -> AudioBuffer (or a promise while it loads)
+    function loadSamples() {
+      const a = actx || audio();
+      if (!a || location.protocol === "file:") return;
+      Object.values(SAMPLES).flat().forEach((f) => {
+        if (decoded[f]) return;
+        decoded[f] = fetch(SOUND_DIR + f).then((r) => r.arrayBuffer())
+          .then((buf) => new Promise((ok, no) => a.decodeAudioData(buf, ok, no)))
+          .then((b) => (decoded[f] = b)).catch(() => delete decoded[f]);
+      });
+    }
+    // play one of a sample's files: level 0-1 (distance), with a little pitch variety so repeats don't sound identical
+    function playSample(name, level = 1, pick = Math.random()) {
+      const a = audio();
+      const files = SAMPLES[name];
+      if (!a || !files.length || level <= 0) return false;
+      const b = decoded[files[Math.floor(pick * files.length) % files.length]];
+      if (!(b instanceof AudioBuffer)) { loadSamples(); return false; }
+      const src = a.createBufferSource();
+      src.buffer = b;
+      src.playbackRate.value = rand(0.92, 1.08);
+      const g = a.createGain(); g.gain.value = level;
+      src.connect(g).connect(bus.sfx);
+      src.start();
+      return true;
+    }
+    function headshotSound(level = 1) {
+      if (!playSample("headshot", level)) arrowHitSound(level); // (until the file has loaded)
+    }
+
     function whirSound(dur) { // the doll turning: a heavy motor
       const a = audio(); if (!a) return;
       const t = a.currentTime;
@@ -600,10 +636,9 @@ Hub.register({
       tone(190, 0.28, 0.22, "triangle"); tone(95, 0.2, 0.16, "sawtooth");
       noise(0.18, 0.12, "highpass", 2500, 0.02);
     }
-    // The bolt hits the head: a wet, fleshy crack. Layers: a sharp crack, a squelch that sweeps down
-    // (resonant filter on noise), a deep thud, a short crunch of bone, and a few splatters after.
-    // level 0-1: quieter for shots far away from you.
-    function headshotSound(level = 1) {
+    // A bolt hitting something that isn't a person (wood, ground): a sharp crack and thud. Made in code.
+    // Kept for when bolts can miss. level 0-1: quieter for hits far away from you.
+    function arrowHitSound(level = 1) {
       const a = audio(); if (!a || level <= 0) return;
       const t = a.currentTime;
       const out = a.createGain(); out.gain.value = level; out.connect(bus.sfx);
@@ -1349,7 +1384,41 @@ Hub.register({
       splatter(p);
       after(1.4, () => bleed(p)); // once they're lying on the ground
       splashCheck(p);
+      screams(p);
     }
+
+    // ---------- screams: contestants near someone who gets shot ----------
+    // Each contestant still on the field within 10 ft of the victim has a 1-in-3 chance to scream; at most two
+    // screams per shot. The rolls come from the game id and the victim, so every player hears the same screams.
+    const SCREAM_RANGE = 3.05; // 10 ft
+    function seeded(str) { // a repeatable random number generator from a string
+      let h = 2166136261;
+      for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 100000) / 100000; };
+    }
+    function screams(victim) {
+      if (simulating) return;
+      const r = seeded((matchId || soloSeed) + ":" + victim.id); // solo: new rolls each game
+      const near = order.filter((q) => q !== victim && !q.out && !q.finished && !q.left && !q.dummy &&
+        Math.hypot(q.mesh.position.x - victim.mesh.position.x, q.mesh.position.z - victim.mesh.position.z) <= SCREAM_RANGE)
+        .sort((a, b) => (a.id < b.id ? -1 : 1)); // same order on every screen
+      let n = 0;
+      for (const q of near) {
+        if (n >= 2) break;
+        if (r() >= 1 / 3) continue;
+        n++;
+        const pick = r(), delay = 0.12 + r() * 0.35; // a moment after the shot
+        q.screamT = 1.2; // (for testing: who screamed)
+        lastScreams.push(q.id);
+        after(delay, () => {
+          const lis = me() && !me().dead ? me().mesh.position : camera.position;
+          const far = Math.hypot(q.mesh.position.x - lis.x, q.mesh.position.z - lis.z);
+          playSample("scream", clamp(1.1 - far / 70, 0.25, 1), pick);
+        });
+      }
+    }
+    const lastScreams = [];
+    const soloSeed = String(Math.random());
 
     // ---------- blood on YOUR screen: someone shot right in front of you ----------
     // Within 10 ft of you and inside a 60° slice of your view (30° either side of where your camera points),
@@ -2392,7 +2461,7 @@ Hub.register({
     }
 
     // for automated testing only: lets a test script read the game's state
-    wrap.rlDebug = { set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
+    wrap.rlDebug = { get screams() { return lastScreams; }, set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
 
     showMenu();
     frame();

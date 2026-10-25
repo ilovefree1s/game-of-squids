@@ -1,0 +1,7 @@
+Sound files used by Red Light, Green Light
+
+squish_06.mp3 (head-shot impact)
+  From "Squish Sounds Effects" on OpenGameArt.org, license CC0 (public domain).
+  https://opengameart.org/content/squish-sounds-effects
+
+All other Red Light sounds (the doll's song, music box, crossbow, buzzer, etc.) are made in code.
