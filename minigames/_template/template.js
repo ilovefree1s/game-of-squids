@@ -7,6 +7,7 @@
 // 5. Put images/sounds for your game in your own folder too.
 // Controls: Input.create(container) gives keyboard + controller + phone controls (see README).
 // Online:   Net.joinRoom(...) gives multiplayer rooms (see README and glass-bridge.js).
+// 3D characters: Models.spawn("knight") gives animated KayKit characters (see README).
 
 Hub.register({
   id: "my-game",            // unique, lowercase, no spaces

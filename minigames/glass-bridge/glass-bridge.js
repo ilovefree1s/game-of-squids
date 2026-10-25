@@ -105,6 +105,8 @@ Hub.register({
                   display: flex; flex-direction: column; gap: 12px; box-shadow: 0 10px 40px #000; }
       .gb3-card h2 { margin: 0; color: var(--accent); }
       .gb3-card label { font-size: .85rem; color: var(--muted); }
+      .gb3-card select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #444;
+                         background: #14141f; color: var(--text); width: 100%; }
       .gb3-card input { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #444;
                         background: #14141f; color: var(--text); width: 100%; }
       .gb3-row { display: flex; gap: 8px; }
@@ -270,8 +272,44 @@ Hub.register({
       return t;
     }
 
-    function makePlayerMesh(num, name, mine) {
+    // KayKit character if it loaded (see shared/models.js), otherwise the simple blocky player
+    function makePlayerMesh(num, name, mine, charId) {
       const g = new THREE.Group();
+      const kk = Models.spawn(charId);
+      if (kk) {
+        g.add(kk.root);
+        if (kk.info.id === "tracksuit") {
+          // number patch on the back, stuck to the chest bone so it moves with the body
+          const patch = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.18),
+            new THREE.MeshBasicMaterial({ map: textTexture(num, 128, 64, "#f4f4f4", "#111", "bold 44px sans-serif") }));
+          patch.userData.own = true;
+          patch.position.set(0, 0.7, 0.245); // middle of the back (KayKit heads are big!)
+          g.add(patch);
+          g.updateMatrixWorld(true);
+          const chest = kk.bone("chest");
+          if (chest) chest.attach(patch);
+        }
+        addNameTag(g, name, mine);
+        g.userData = { kk };
+        scene.add(g);
+        return g;
+      }
+      return makeBlockyPlayer(g, num, name, mine);
+    }
+
+    function addNameTag(g, name, mine) {
+      if (!name) return;
+      const tag = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: textTexture(name, 256, 64, null, mine ? "#ffcc33" : "#ffffff", "bold 34px sans-serif"),
+        depthTest: false, transparent: true,
+      }));
+      tag.userData.own = true;
+      tag.scale.set(1.4, 0.35, 1);
+      tag.position.y = 2.35;
+      g.add(tag);
+    }
+
+    function makeBlockyPlayer(g, num, name, mine) {
       const suit = new THREE.MeshStandardMaterial({ color: 0x1f7a63, roughness: 0.85 });
       const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.8 });
       const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48a, roughness: 0.7 });
@@ -320,16 +358,7 @@ Hub.register({
       hairCap.position.y = 1.78;
       g.add(hairCap);
 
-      if (name) {
-        const tag = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: textTexture(name, 256, 64, null, mine ? "#ffcc33" : "#ffffff", "bold 34px sans-serif"),
-          depthTest: false, transparent: true,
-        }));
-        tag.scale.set(1.4, 0.35, 1);
-        tag.position.y = 2.3;
-        g.add(tag);
-      }
-
+      addNameTag(g, name, mine);
       g.userData = { legs, arms };
       scene.add(g);
       return g;
@@ -338,6 +367,19 @@ Hub.register({
     const lerpAngle = (a, b, t) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * Math.min(1, t);
 
     function animate(p, speed, inAir, dt) {
+      const kk = p.mesh.userData.kk;
+      if (kk) {
+        if (p.out) {
+          kk.play("Jump_Idle", { speed: 1.6 });
+          p.mesh.rotation.x += 3 * dt; // tumbling
+        } else if (inAir) kk.play("Jump_Idle");
+        else if (p.finished) kk.play("Cheering");
+        else if (speed > 2.2) kk.play("Running_A", { speed: Math.min(1.4, Math.max(0.7, speed / 3.6)) });
+        else if (speed > 0.3) kk.play("Walking_A", { speed: Math.min(1.4, Math.max(0.6, speed / 1.5)) });
+        else kk.play("Idle_A");
+        kk.update(dt);
+        return;
+      }
       const { legs, arms } = p.mesh.userData;
       if (p.out) {
         arms.forEach((a) => (a.rotation.x = -2.6 + Math.sin(time * 20) * 0.4));
@@ -423,7 +465,7 @@ Hub.register({
         out: false, finished: false, best: -1,
         vel: new THREE.Vector3(), onGround: true, phase: 0,
         target: null, targetRy: 0, lastSent: null, sendT: 0,
-        mesh: makePlayerMesh(r.num, mode === "online" ? r.name : null, mine),
+        mesh: makePlayerMesh(r.num, mode === "online" ? r.name : null, mine, r.char),
       };
       p.mesh.position.copy(spawnSpot(k));
       return p;
@@ -435,7 +477,9 @@ Hub.register({
       timeouts.length = 0;
       order.forEach((p) => {
         scene.remove(p.mesh);
+        const shared = !!p.mesh.userData.kk;
         p.mesh.traverse((o) => {
+          if (shared && !o.userData.own) return; // KayKit geometry is shared by every copy
           if (o.geometry) o.geometry.dispose();
           if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
         });
@@ -459,7 +503,24 @@ Hub.register({
       api.setScore(0);
     }
 
-    // roster: [{ id, name, num }]
+    // Download everyone's character first (max ~8s), then start.
+    let loadingMatch = false;
+    function beginMatch(safeArr, roster, id = "") {
+      if (loadingMatch) return;
+      loadingMatch = true;
+      if (Models.available()) {
+        lobby.hidden = false;
+        lobby.innerHTML = "";
+        const card = el("div", "gb3-card");
+        card.append(el("h2", "", "Loading characters…"));
+        lobby.append(card);
+      }
+      const go = () => { loadingMatch = false; startMatch(safeArr, roster, id); };
+      if (!Models.available()) return go();
+      Models.loadAll(roster.map((r) => r.char || "tracksuit")).then(go);
+    }
+
+    // roster: [{ id, name, num, char }]
     function startMatch(safeArr, roster, id = "") {
       if (started) resetMatch();
       matchId = id;
@@ -467,7 +528,7 @@ Hub.register({
       order = roster.map(addPlayer);
       if (mode === "solo") {
         // the active solo player stands at the front; the others wait off to the sides
-        order.forEach((p, k) => p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.5 : 2.5, 0, k === 0 ? -1.4 : 1.2));
+        order.forEach((p, k) => p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.2 : 2.2, 0, k === 0 ? -1.4 : -0.6));
       }
       started = true;
       lobby.hidden = true;
@@ -598,7 +659,7 @@ Hub.register({
         p.onGround = true;
         p.target = null;
         p.lastSent = null;
-        if (mode === "solo") p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.5 : 2.5, 0, k === 0 ? -1.4 : 1.2);
+        if (mode === "solo") p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.2 : 2.2, 0, k === 0 ? -1.4 : -0.6);
         else p.mesh.position.copy(spawnSpot(order.indexOf(p)));
         k++;
       });
@@ -681,11 +742,11 @@ Hub.register({
         t: "start",
         m: Math.random().toString(36).slice(2, 10),
         safe: randomSafe(),
-        roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i] })),
+        roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i], char: p.char || "tracksuit" })),
       };
       room.send(data);
       room.update({ inGame: true });
-      startMatch(data.safe, data.roster, data.m);
+      beginMatch(data.safe, data.roster, data.m);
     }
 
     // ---------- physics ----------
@@ -777,7 +838,7 @@ Hub.register({
           return;
         }
         room.update({ inGame: true });
-        return startMatch(data.safe, data.roster, data.m);
+        return beginMatch(data.safe, data.roster, data.m);
       }
       if (!started || data.m !== matchId) return; // not for this match
       const p = order.find((q) => q.id === from);
@@ -817,6 +878,8 @@ Hub.register({
     let roomNoteBad = false;
     const savedName = (() => { try { return localStorage.getItem("gos:name") || ""; } catch { return ""; } })();
     const lastCode = (() => { try { return localStorage.getItem("gos:lastRoom") || ""; } catch { return ""; } })();
+    let myChar = (() => { try { return Models.byId(localStorage.getItem("gos:char") || "tracksuit").id; } catch { return "tracksuit"; } })();
+    if (Models.available()) Models.load(myChar).catch(() => {}); // start downloading early
 
     function makeInput(value, placeholder, max) {
       const i = el("input");
@@ -833,12 +896,29 @@ Hub.register({
       card.append(el("label", "", "Your name"));
       const nameIn = makeInput(savedName, "e.g. Sam", 14);
       card.append(nameIn);
+      if (Models.available()) {
+        card.append(el("label", "", "Character"));
+        const pick = el("select");
+        Models.CHARACTERS.forEach((c) => {
+          const o = el("option", "", c.label);
+          o.value = c.id;
+          if (c.id === myChar) o.selected = true;
+          pick.append(o);
+        });
+        pick.addEventListener("keydown", (e) => e.stopPropagation());
+        pick.onchange = () => {
+          myChar = pick.value;
+          try { localStorage.setItem("gos:char", myChar); } catch {}
+          Models.load(myChar).catch(() => {});
+        };
+        card.append(pick);
+      }
 
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         mode = "solo";
         const nums = randomNumbers(SOLO_PLAYERS);
-        startMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num })));
+        beginMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num, char: myChar })));
       };
       const create = el("button", "", "Create online room");
       const codeRow = el("div", "gb3-row");
@@ -886,7 +966,7 @@ Hub.register({
               showRoom("Couldn't connect to the online server. Check your internet, or Realtime settings in Supabase.", true);
             }
           },
-        });
+        }, { char: myChar });
       } catch (err) {
         return showRoom("Online play failed to start: " + err.message, true);
       }
@@ -910,7 +990,8 @@ Hub.register({
       const ul = el("ul", "gb3-list");
       list.slice(0, MAX_ONLINE).forEach((p, i) => {
         const mine = room && p.id === room.id;
-        ul.append(el("li", "", `${p.name}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}`));
+        const ch = Models.available() && p.char ? ` · ${Models.byId(p.char).label}` : "";
+        ul.append(el("li", "", `${p.name}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}${ch}`));
       });
       card.append(el("label", "", `Players (${Math.min(list.length, MAX_ONLINE)}/${MAX_ONLINE})`), ul);
 

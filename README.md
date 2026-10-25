@@ -24,7 +24,9 @@ shared/             ← shared by everyone:
   input.js          ←   keyboard / controller / phone controls
   net.js            ←   online rooms (Supabase Realtime)
   config.js         ←   Supabase URL + publishable key
-  lib/              ←   three.js (3D) and supabase-js
+  models.js         ←   animated KayKit 3D characters
+  models/           ←   the KayKit character + animation files
+  lib/              ←   three.js (3D), its model loader, and supabase-js
 minigames/
   snake/            ← one folder per mini-game
   reaction/
@@ -54,11 +56,11 @@ minigames/
 |------|--------|--------|
 | Snake | Player 1 | playable |
 | Reaction Time | Player 2 | playable |
-| Glass Bridge (3D, online) | ilovefree1s | playable |
+| Glass Bridge (3D, online, KayKit characters) | ilovefree1s | playable |
 
 ## 3D
 
-3D games use [three.js](https://threejs.org) (r149), included at `shared/lib/three.min.js`
+3D games use [three.js](https://threejs.org) (r147), included at `shared/lib/three.min.js`
 so the game works offline with no install. It's loaded in `index.html` before the games,
 so any mini-game can use the global `THREE`.
 
@@ -86,3 +88,25 @@ room.leave();                  // in your cleanup
 
 `shared/config.js` holds the Supabase **publishable** key, which is safe to be public.
 Never commit the secret key (`sb_secret_...`).
+
+## 3D characters (KayKit)
+
+`shared/models.js` gives any 3D game animated characters from the KayKit packs.
+
+```js
+await Models.load("knight");            // download first (or Models.loadAll([...]))
+const c = Models.spawn("knight");       // new animated copy; null if it couldn't load
+scene.add(c.root);
+c.play("Running_A");                    // Idle_A, Walking_A, Running_A, Jump_Start, Jump_Idle,
+                                        // Jump_Land, Hit_A, Death_A, Cheering, Waving
+c.update(dt);                           // every frame
+```
+
+Characters: `tracksuit`, `knight`, `barbarian`, `mage`, `ranger`, `rogue`, `rogue-hooded`,
+`skeleton-minion`, `skeleton-warrior`, `skeleton-mage`, `skeleton-rogue` (see `Models.CHARACTERS`).
+
+Models only load when the game runs from a website (GitHub Pages, or VS Code's **Live Server**).
+Opened straight from the file, browsers block them, so have a fallback for when `spawn()` returns `null`.
+
+Art: **KayKit** by Kay Lousberg ([kaylousberg.com](https://www.kaylousberg.com)), CC0 (free to use).
+See `shared/models/KayKit-LICENSE.txt`.
