@@ -981,6 +981,18 @@ Hub.register({
       return p;
     }
 
+    // A fallen body: lower it until its lowest bone is just above the ground (bones sit inside the body).
+    const boneV = new THREE.Vector3();
+    function settle(p, kk, dt) {
+      let lo = Infinity;
+      kk.model.traverse((o) => { if (o.isBone) { o.getWorldPosition(boneV); if (boneV.y < lo) lo = boneV.y; } });
+      if (!isFinite(lo)) return;
+      const drop = lo - 0.1; // how far above the ground it's floating
+      p.mesh.position.y -= drop * Math.min(1, dt * 6);
+      const blob = p.mesh.children.find((c) => c.geometry === blobGeo);
+      if (blob) blob.position.y = -p.mesh.position.y + 0.015; // the shadow stays on the ground
+    }
+
     function animate(p, dt) {
       if (simulating) return; // nobody's watching: skip the animation work
       const kk = p.mesh.userData.kk;
@@ -988,7 +1000,10 @@ Hub.register({
         if (p.dead) p.mesh.userData.body.rotation.x = Math.min(Math.PI / 2, p.mesh.userData.body.rotation.x + dt * 6);
         return;
       }
-      if (p.dead) kk.play("Death_A", { once: true, fade: 0.08 });
+      if (p.dead) {
+        kk.play("Death_A", { once: true, fade: 0.08 });
+        settle(p, kk, dt);
+      }
       else if (p.pushT > 0) kk.play("Melee_Block_Attack", { once: true, speed: 1.6, fade: 0.05 }); // two-handed shove
       else if (p.hitT > 0) kk.play("Hit_A", { once: true, fade: 0.05 });
       else if (p.finished) kk.play("Cheering");
@@ -1162,7 +1177,9 @@ Hub.register({
     function stepRemote(p, dt) {
       if (!p.target || p.left) return;
       const P = p.mesh.position;
-      P.lerp(p.target, Math.min(1, dt * 12));
+      const k = Math.min(1, dt * 12);
+      P.x += (p.target.x - P.x) * k; // (height is left alone: a fallen body settles itself onto the ground)
+      P.z += (p.target.z - P.z) * k;
       if (!p.dead) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, p.targetRy, dt * 12);
     }
 
@@ -1306,9 +1323,80 @@ Hub.register({
         say(`Player ${p.num}, eliminated.` + (traitor ? `\nBetrayed by ${traitor.name}` : ""), "bad");
       }
       after(1.8, checkEnd);
+      splatter(p);
+      after(1.4, () => bleed(p)); // once they're lying on the ground
+    }
+
+    // ---------- blood: a spatter when the shot hits, then a pool that slowly spreads around the head ----------
+    const pools = [];
+    const POOL_GROW = 14; // seconds for the pool to reach full size
+    const POOL_SIZE = 0.457; // full pool: about 3 ft across (radius in meters)
+    const texs = {};
+    function blobTexture(kind) { // drawn once each
+      if (texs[kind]) return texs[kind];
+      texs[kind] = canvasTex(256, 256, (g, w, h) => {
+        g.translate(w / 2, h / 2);
+        const shape = (r, wobble, points, color) => {
+          g.fillStyle = color;
+          g.beginPath();
+          for (let i = 0; i <= points; i++) {
+            const a = (i / points) * Math.PI * 2, rr = r * (1 - wobble + Math.random() * wobble);
+            i ? g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr) : g.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+          }
+          g.closePath();
+          g.fill();
+        };
+        if (kind === "splat") { // ragged, with droplets
+          shape(80, 0.35, 18, "rgba(110,6,12,.95)");
+          for (let i = 0; i < 14; i++) {
+            const a = Math.random() * Math.PI * 2, d = 70 + Math.random() * 50;
+            g.fillStyle = "rgba(110,6,12,.9)";
+            g.beginPath(); g.arc(Math.cos(a) * d, Math.sin(a) * d, 4 + Math.random() * 9, 0, Math.PI * 2); g.fill();
+          }
+        } else { // a smooth, glossy pool
+          const grad = g.createRadialGradient(0, 0, 10, 0, 0, 122);
+          grad.addColorStop(0, "rgba(70,0,6,.97)"); grad.addColorStop(0.8, "rgba(100,4,10,.95)"); grad.addColorStop(1, "rgba(120,8,14,.85)");
+          shape(122, 0.08, 40, grad);
+          g.fillStyle = "rgba(255,255,255,.10)";
+          g.beginPath(); g.ellipse(-30, -34, 34, 13, -0.6, 0, Math.PI * 2); g.fill();
+        }
+      });
+      return texs[kind];
+    }
+    function decal(kind, x, z, size, grow, follow) {
+      const m = new THREE.Mesh(new THREE.CircleGeometry(1, 28), new THREE.MeshBasicMaterial({
+        map: blobTexture(kind), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2,
+      }));
+      m.rotation.x = -Math.PI / 2;
+      m.rotation.z = Math.random() * Math.PI * 2;
+      m.position.set(x, 0.025 + pools.length * 0.0004, z);
+      m.scale.setScalar(0.02);
+      scene.add(m);
+      pools.push({ m, t: 0, size, grow, follow });
+    }
+    function splatter(p) { // the moment the shot hits
+      if (simulating || p.left) return;
+      const h = headOf(p);
+      decal("splat", h.x + rand(-0.15, 0.15), h.z + rand(-0.15, 0.15), rand(0.28, 0.36), 0.15, null);
+    }
+    function bleed(p) { // once they're down: the pool spreads around the head
+      if (simulating || !p.dead || p.left) return;
+      const h = headOf(p);
+      decal("pool", h.x, h.z, POOL_SIZE * rand(0.9, 1.1), POOL_GROW, p);
+    }
+    function updatePools(dt) {
+      for (const b of pools) {
+        if (b.t >= b.grow) continue;
+        b.t += dt;
+        if (b.follow) { const h = headOf(b.follow); b.m.position.x = h.x; b.m.position.z = h.z; } // stays under the head
+        const k = 1 - Math.pow(1 - Math.min(1, b.t / b.grow), 2); // spreads fast at first, then slower
+        b.m.scale.setScalar(0.02 + (b.size - 0.02) * k);
+      }
     }
     function finish(p) {
       if (p.finished || p.out) return;
+      // after time's up you can still run (and cross), but it doesn't count: everyone left on the field is shot
+      if (phase === "over" || clockLeft <= 0) return;
       p.finished = true;
       p.finishLeft = clockLeft;
       renderPlayers();
@@ -1425,6 +1513,8 @@ Hub.register({
       });
       order = [];
       bolts.forEach((b) => scene.remove(b.obj));
+      pools.forEach((b) => { scene.remove(b.m); b.m.geometry.dispose(); b.m.material.dispose(); });
+      pools.length = 0;
       bolts.length = 0;
       started = done = false;
       wasSpectating = false;
@@ -2083,6 +2173,7 @@ Hub.register({
         }
       });
       updateBolts(dt);
+      updatePools(dt);
 
       // camera: behind and above you, looking down the field at the doll.
       // Once you're dead (after a moment to see yourself fall), you watch the rest from the doll's eyes.
