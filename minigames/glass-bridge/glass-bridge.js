@@ -3,7 +3,7 @@
 //
 // SOLO:   3 players, one at a time. When one falls, the next starts from the platform.
 // If EVERYONE falls, everyone respawns for another round; broken glass stays broken.
-// The match ends when someone crosses or the 90s clock runs out.
+// The match ends when someone crosses or the 120s clock runs out.
 // ONLINE: create a room, share the 4-letter code, up to 8 friends join.
 //         Everyone runs the same bridge at the same time. You can watch each other —
 //         and learn from each other's mistakes. Online, the host can Rematch from the results screen.
@@ -31,7 +31,7 @@ Hub.register({
     // ---------- settings ----------
     const STEPS = 18;
     const SOLO_PLAYERS = 3;
-    const TIME = 90; // seconds to cross
+    const TIME = 120; // seconds to cross
     const COUNTDOWN = 3; // seconds before the clock starts
     const MAX_ONLINE = 8;
     const ROW_GAP = 2.4;
