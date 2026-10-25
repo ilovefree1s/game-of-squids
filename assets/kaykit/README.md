@@ -12,9 +12,14 @@ Each pack has the same files in several formats (`gltf`/`glb` for the web, `fbx`
 For the browser games, use the **glTF/GLB** files.
 
 **These are the source files: the game doesn't load anything from this folder.**
-The game uses the trimmed copies in `shared/models/` (characters + one small animations file),
-loaded through `shared/models.js`. To use something new from here in a game, copy the `.glb`
-into `shared/models/` (or ask Claude to add it to `Models`).
+The game uses web-ready copies in `shared/models/`, loaded through `shared/models.js`:
+- `characters/`: the characters
+- `animations.glb`: the small basic set every character loads
+- `animations/`: every Rig_Medium animation set from Character_Animations_1.1, with the
+  mannequin mesh stripped out of each file (bones + animations only, about half the size)
+- `props/`: every weapon/item from Adventurers_2.0 and Skeletons_1.1, each packed into one `.glb`
+
+The Rig_Large animations aren't copied, since no character in the game uses that rig yet.
 
 All Medium characters (adventurers, skeletons, mannequin) share the **Rig_Medium** skeleton,
 so every `Rig_Medium` animation works on all of them.

@@ -7,9 +7,64 @@
 //   c.play("Running_A", { speed: 1.2 });    // crossfades from the current animation
 //   c.update(dt);                           // every frame
 //
-// Animations (shared/models/animations.glb):
-//   Idle_A, Walking_A, Running_A, Jump_Start, Jump_Idle, Jump_Land,
-//   Hit_A, Death_A, Cheering, Waving
+// Animations
+//   Always loaded with any character (shared/models/animations.glb):
+//     Idle_A, Walking_A, Running_A, Jump_Start, Jump_Idle, Jump_Land,
+//     Hit_A, Death_A, Cheering, Waving
+//
+//   Every other KayKit animation works too. They come in sets (shared/models/animations/),
+//   downloaded only by games that use them. Load the sets you need before the game starts:
+//     await Models.loadAnims(["ranged", "general"]);
+//   (Playing one that isn't loaded yet still works: its set downloads and it starts a moment later.)
+//
+//   general:           Death_A, Death_A_Pose, Death_B, Death_B_Pose, Hit_A, Hit_B, Idle_A, Idle_B,
+//                      Interact, PickUp, Spawn_Air, Spawn_Ground, Throw, Use_Item
+//   movement:          Jump_Full_Long, Jump_Full_Short, Jump_Idle, Jump_Land, Jump_Start,
+//                      Running_A, Running_B, Walking_A, Walking_B, Walking_C
+//   movement-advanced: Crawling, Crouching, Dodge_Backward, Dodge_Forward, Dodge_Left, Dodge_Right,
+//                      Running_HoldingBow, Running_HoldingRifle, Running_Strafe_Left,
+//                      Running_Strafe_Right, Sneaking, Walking_Backwards
+//   melee:             Melee_1H_Attack_Chop, Melee_1H_Attack_Jump_Chop, Melee_1H_Attack_Slice_Diagonal,
+//                      Melee_1H_Attack_Slice_Horizontal, Melee_1H_Attack_Stab, Melee_2H_Attack_Chop,
+//                      Melee_2H_Attack_Slice, Melee_2H_Attack_Spin, Melee_2H_Attack_Spinning,
+//                      Melee_2H_Attack_Stab, Melee_2H_Idle, Melee_Block, Melee_Block_Attack,
+//                      Melee_Block_Hit, Melee_Blocking, Melee_Dualwield_Attack_Chop,
+//                      Melee_Dualwield_Attack_Slice, Melee_Dualwield_Attack_Stab,
+//                      Melee_Unarmed_Attack_Kick, Melee_Unarmed_Attack_Punch_A, Melee_Unarmed_Idle
+//   ranged:            Ranged_1H_Aiming, Ranged_1H_Reload, Ranged_1H_Shoot, Ranged_1H_Shooting,
+//                      Ranged_2H_Aiming, Ranged_2H_Reload, Ranged_2H_Shoot, Ranged_2H_Shooting,
+//                      Ranged_Bow_Aiming_Idle, Ranged_Bow_Draw, Ranged_Bow_Draw_Up, Ranged_Bow_Idle,
+//                      Ranged_Bow_Release, Ranged_Bow_Release_Up, Ranged_Magic_Raise, Ranged_Magic_Shoot,
+//                      Ranged_Magic_Spellcasting, Ranged_Magic_Spellcasting_Long, Ranged_Magic_Summon
+//   simulation:        Cheering, Lie_Down, Lie_Idle, Lie_StandUp, Push_Ups, Sit_Chair_Down,
+//                      Sit_Chair_Idle, Sit_Chair_StandUp, Sit_Floor_Down, Sit_Floor_Idle,
+//                      Sit_Floor_StandUp, Sit_Ups, Waving
+//   special:           EXPERIMENTAL_Medium_Transform, Skeletons_Awaken_Floor, Skeletons_Awaken_Floor_Long,
+//                      Skeletons_Awaken_Standing, Skeletons_Death, Skeletons_Death_Pose,
+//                      Skeletons_Death_Resurrect, Skeletons_Idle, Skeletons_Inactive_Floor_Pose,
+//                      Skeletons_Inactive_Standing_Pose, Skeletons_Spawn_Ground, Skeletons_Taunt,
+//                      Skeletons_Taunt_Longer, Skeletons_Walking
+//   tools:             Chop, Chopping, Dig, Digging, Fishing_Bite, Fishing_Cast, Fishing_Catch,
+//                      Fishing_Idle, Fishing_Reeling, Fishing_Struggling, Fishing_Tug, Hammer, Hammering,
+//                      Holding_A, Holding_B, Holding_C, Lockpick, Lockpicking, Pickaxe, Pickaxing, Saw,
+//                      Sawing, Work_A, Work_B, Work_C, Working_A, Working_B, Working_C
+//
+// Props: weapons and items a character can hold (shared/models/props/)
+//   await Models.loadProps(["Skeleton_Crossbow"]);
+//   c.hold("Skeleton_Crossbow");            // right hand; c.hold("shield_round", "left") for the left
+//   c.hold("Skeleton_Crossbow", "right", { turn: [0, 90, 0] }); // rotate it in the hand (degrees)
+//   c.hold(null);                           // empty the right hand
+//   const bolt = Models.prop("Skeleton_Arrow"); // a loose copy to put anywhere in your scene
+//
+//   Adventurers: arrow_bow, arrow_bow_bundle, arrow_crossbow, arrow_crossbow_bundle, axe_1handed,
+//     axe_2handed, bow, bow_withString, crossbow_1handed, crossbow_2handed, dagger, mug_empty,
+//     mug_full, quiver, shield_badge, shield_badge_color, shield_round, shield_round_barbarian,
+//     shield_round_color, shield_spikes, shield_spikes_color, shield_square, shield_square_color,
+//     smokebomb, spellbook_closed, spellbook_open, staff, sword_1handed, sword_2handed,
+//     sword_2handed_color, wand
+//   Skeletons: Skeleton_Arrow, Skeleton_Arrow_Broken, Skeleton_Arrow_Broken_Half, Skeleton_Arrow_Half,
+//     Skeleton_Axe, Skeleton_Blade, Skeleton_Crossbow, Skeleton_Quiver, Skeleton_Shield_Large_A,
+//     Skeleton_Shield_Large_B, Skeleton_Shield_Small_A, Skeleton_Shield_Small_B, Skeleton_Staff
 //
 // Models need the game to be served from a website (GitHub Pages or a local server).
 // Opened straight from a file (file://) browsers block loading them, so games should fall back
@@ -36,11 +91,52 @@ const Models = (() => {
   const BODY = { legs: 2.0, torso: 1.55, head: 0.6, slim: 0.68 };
   const byId = (id) => CHARACTERS.find((c) => c.id === id) || CHARACTERS[0];
 
+  // Animation sets (see the list at the top). "basic" is the small file every character loads.
+  const ANIM_SETS = {
+    basic: "animations.glb",
+    general: "animations/general.glb",
+    movement: "animations/movement.glb",
+    "movement-advanced": "animations/movement-advanced.glb",
+    melee: "animations/melee.glb",
+    ranged: "animations/ranged.glb",
+    simulation: "animations/simulation.glb",
+    special: "animations/special.glb",
+    tools: "animations/tools.glb",
+  };
+  // Which set each animation is in, so play() can fetch a set nobody loaded yet.
+  // Clips in "basic" are also in general/movement/simulation; basic is always loaded first.
+  const CLIP_SET = {};
+  const SET_CLIPS = {
+    general: "Death_A Death_A_Pose Death_B Death_B_Pose Hit_A Hit_B Idle_A Idle_B Interact PickUp Spawn_Air Spawn_Ground Throw Use_Item",
+    movement: "Jump_Full_Long Jump_Full_Short Jump_Idle Jump_Land Jump_Start Running_A Running_B Walking_A Walking_B Walking_C",
+    "movement-advanced": "Crawling Crouching Dodge_Backward Dodge_Forward Dodge_Left Dodge_Right Running_HoldingBow Running_HoldingRifle Running_Strafe_Left Running_Strafe_Right Sneaking Walking_Backwards",
+    melee: "Melee_1H_Attack_Chop Melee_1H_Attack_Jump_Chop Melee_1H_Attack_Slice_Diagonal Melee_1H_Attack_Slice_Horizontal Melee_1H_Attack_Stab Melee_2H_Attack_Chop Melee_2H_Attack_Slice Melee_2H_Attack_Spin Melee_2H_Attack_Spinning Melee_2H_Attack_Stab Melee_2H_Idle Melee_Block Melee_Block_Attack Melee_Block_Hit Melee_Blocking Melee_Dualwield_Attack_Chop Melee_Dualwield_Attack_Slice Melee_Dualwield_Attack_Stab Melee_Unarmed_Attack_Kick Melee_Unarmed_Attack_Punch_A Melee_Unarmed_Idle",
+    ranged: "Ranged_1H_Aiming Ranged_1H_Reload Ranged_1H_Shoot Ranged_1H_Shooting Ranged_2H_Aiming Ranged_2H_Reload Ranged_2H_Shoot Ranged_2H_Shooting Ranged_Bow_Aiming_Idle Ranged_Bow_Draw Ranged_Bow_Draw_Up Ranged_Bow_Idle Ranged_Bow_Release Ranged_Bow_Release_Up Ranged_Magic_Raise Ranged_Magic_Shoot Ranged_Magic_Spellcasting Ranged_Magic_Spellcasting_Long Ranged_Magic_Summon",
+    simulation: "Cheering Lie_Down Lie_Idle Lie_StandUp Push_Ups Sit_Chair_Down Sit_Chair_Idle Sit_Chair_StandUp Sit_Floor_Down Sit_Floor_Idle Sit_Floor_StandUp Sit_Ups Waving",
+    special: "EXPERIMENTAL_Medium_Transform Skeletons_Awaken_Floor Skeletons_Awaken_Floor_Long Skeletons_Awaken_Standing Skeletons_Death Skeletons_Death_Pose Skeletons_Death_Resurrect Skeletons_Idle Skeletons_Inactive_Floor_Pose Skeletons_Inactive_Standing_Pose Skeletons_Spawn_Ground Skeletons_Taunt Skeletons_Taunt_Longer Skeletons_Walking",
+    tools: "Chop Chopping Dig Digging Fishing_Bite Fishing_Cast Fishing_Catch Fishing_Idle Fishing_Reeling Fishing_Struggling Fishing_Tug Hammer Hammering Holding_A Holding_B Holding_C Lockpick Lockpicking Pickaxe Pickaxing Saw Sawing Work_A Work_B Work_C Working_A Working_B Working_C",
+  };
+  for (const [set, names] of Object.entries(SET_CLIPS)) names.split(" ").forEach((n) => (CLIP_SET[n] ??= set));
+
+  // Weapons and items (see the list at the top), one .glb each in shared/models/props/
+  const PROPS = (
+    "arrow_bow arrow_bow_bundle arrow_crossbow arrow_crossbow_bundle axe_1handed axe_2handed bow bow_withString " +
+    "crossbow_1handed crossbow_2handed dagger mug_empty mug_full quiver shield_badge shield_badge_color shield_round " +
+    "shield_round_barbarian shield_round_color shield_spikes shield_spikes_color shield_square shield_square_color " +
+    "smokebomb spellbook_closed spellbook_open staff sword_1handed sword_2handed sword_2handed_color wand " +
+    "Skeleton_Arrow Skeleton_Arrow_Broken Skeleton_Arrow_Broken_Half Skeleton_Arrow_Half Skeleton_Axe Skeleton_Blade " +
+    "Skeleton_Crossbow Skeleton_Quiver Skeleton_Shield_Large_A Skeleton_Shield_Large_B Skeleton_Shield_Small_A " +
+    "Skeleton_Shield_Small_B Skeleton_Staff"
+  ).split(" ");
+
   let loader = null;
-  let animsPromise = null;
   let bodyHeight = null; // the plain mannequin's height, so hats/helmets don't shrink anyone
   const loading = {};
   const ready = {};
+  const clips = {}; // every animation loaded so far, by name, shared by all characters
+  const setLoading = {};
+  const propLoading = {};
+  const propReady = {};
 
   function available() {
     return typeof THREE !== "undefined" && !!THREE.GLTFLoader && !!THREE.SkeletonUtils && location.protocol !== "file:";
@@ -51,19 +147,60 @@ const Models = (() => {
     return new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
   }
 
-  function animations() {
-    if (!animsPromise) {
-      animsPromise = gltf(BASE + "animations.glb").then((g) => {
-        const clips = {};
+  // Download one animation set. Safe to call many times.
+  function loadSet(set) {
+    if (!ANIM_SETS[set]) return Promise.reject(new Error("Unknown animation set: " + set));
+    if (!available()) return Promise.reject(new Error("3D models need the game to run from a website"));
+    if (!setLoading[set]) {
+      setLoading[set] = gltf(BASE + ANIM_SETS[set]).then((g) => {
         g.animations.forEach((c) => {
+          if (clips[c.name]) return; // already have it (e.g. Idle_A from the basic file)
           // drop bone-scale keys so our body proportions (BODY below) aren't undone every frame
           c.tracks = c.tracks.filter((t) => !t.name.endsWith(".scale"));
           clips[c.name] = c;
         });
         return clips;
       });
+      setLoading[set].catch(() => delete setLoading[set]); // allow a retry later
     }
-    return animsPromise;
+    return setLoading[set];
+  }
+
+  function animations() {
+    return loadSet("basic");
+  }
+
+  // Download extra animation sets, e.g. Models.loadAnims(["ranged", "general"]). Use "all" for every set.
+  function loadAnims(sets) {
+    const list = sets === "all" ? Object.keys(ANIM_SETS) : [].concat(sets);
+    return Promise.all(list.map(loadSet)).then(() => clips);
+  }
+
+  // Download props, e.g. Models.loadProps(["Skeleton_Crossbow", "Skeleton_Arrow"]). Safe to call many times.
+  function loadProps(names) {
+    if (!available()) return Promise.reject(new Error("3D models need the game to run from a website"));
+    return Promise.all([].concat(names).map((name) => {
+      if (!PROPS.includes(name)) return Promise.reject(new Error("Unknown prop: " + name));
+      if (!propLoading[name]) {
+        propLoading[name] = Promise.all([gltf(BASE + "props/" + name + ".glb"), baseHeight()]).then(([g]) => {
+          g.scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+          propReady[name] = g.scene;
+          return g.scene;
+        });
+        propLoading[name].catch(() => delete propLoading[name]);
+      }
+      return propLoading[name];
+    }));
+  }
+
+  // A loose copy of a loaded prop, sized to match the characters. null if it isn't loaded.
+  function prop(name) {
+    const src = propReady[name];
+    if (!src) return null;
+    const o = src.clone();
+    const s = HEIGHT / (bodyHeight || 1);
+    o.scale.setScalar(s);
+    return o;
   }
 
   function measure(scene) {
@@ -88,8 +225,8 @@ const Models = (() => {
     if (!loading[info.id]) {
       const head = info.headFrom ? load(info.headFrom) : null; // borrowed head
       loading[info.id] = Promise.all([gltf(BASE + "characters/" + info.file + ".glb"), animations(), baseHeight(), head])
-        .then(([g, clips]) => {
-          ready[info.id] = { scene: g.scene, clips, info };
+        .then(([g]) => {
+          ready[info.id] = { scene: g.scene, info };
           return ready[info.id];
         });
       loading[info.id].catch(() => delete loading[info.id]); // allow a retry later
@@ -123,13 +260,27 @@ const Models = (() => {
 
     const mixers = parts.map((m) => new THREE.AnimationMixer(m));
     const actions = {};
-    for (const [name, clip] of Object.entries(d.clips)) actions[name] = mixers.map((mx) => mx.clipAction(clip));
     let current = null;
     let currentName = "";
+    let wanted = ""; // an animation asked for whose set is still downloading
 
-    function play(name, { fade = 0.15, once = false, speed = 1 } = {}) {
-      const a = actions[name];
-      if (!a) return;
+    function action(name) {
+      if (!actions[name] && clips[name]) actions[name] = mixers.map((mx) => mx.clipAction(clips[name]));
+      return actions[name];
+    }
+
+    function play(name, opts = {}) {
+      const { fade = 0.15, once = false, speed = 1 } = opts;
+      const a = action(name);
+      if (!a) {
+        // not downloaded yet: fetch its set, then start it (unless something else was asked for meanwhile)
+        const set = CLIP_SET[name];
+        if (!set) { console.warn("Models: no animation named " + name); return; }
+        wanted = name;
+        loadSet(set).then(() => { if (wanted === name) play(name, opts); }).catch(() => {});
+        return;
+      }
+      wanted = "";
       a.forEach((x) => (x.timeScale = speed));
       if (currentName === name) return;
       a.forEach((x, i) => {
@@ -145,15 +296,63 @@ const Models = (() => {
     }
     play("Idle_A", { fade: 0 });
 
+    // Held props follow the hand bone. They're not parented to it, because the stretched body
+    // (BODY above) would stretch and skew them too; instead update() copies the hand's position
+    // and rotation onto them every frame, at normal proportions.
+    const SLOTS = { right: "handslotr", left: "handslotl" };
+    const held = {}; // hand -> { obj, bone, turn }
+    const tmpP = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const propScale = HEIGHT / (bodyHeight || measure(d.scene));
+
+    // Put a loaded prop in a hand ("right" or "left"). Returns the prop, or null.
+    // hold(null) empties the hand. Load props first: await Models.loadProps([...]).
+    // turn: extra rotation in the hand, [x, y, z] in degrees. KayKit props sit in the hand the way
+    // the pack's pictures show (a crossbow held across the body); for the 2-handed aim/shoot
+    // animations a crossbow needs { turn: [0, 90, 0] } to point forward.
+    function hold(name, hand = "right", { turn = [0, 0, 0] } = {}) {
+      if (held[hand]) { root.remove(held[hand].obj); delete held[hand]; }
+      if (!name) return null;
+      const bone = model.getObjectByName(SLOTS[hand]);
+      const obj = prop(name);
+      if (!bone || !obj) {
+        if (!obj) console.warn("Models: prop " + name + " isn't loaded (Models.loadProps first)");
+        return null;
+      }
+      obj.scale.setScalar(propScale);
+      root.add(obj);
+      const r = THREE.MathUtils.degToRad;
+      held[hand] = { obj, bone, turn: new THREE.Quaternion().setFromEuler(new THREE.Euler(r(turn[0]), r(turn[1]), r(turn[2]))) };
+      followHands();
+      return obj;
+    }
+
+    function followHands() {
+      const hands = Object.values(held);
+      if (!hands.length) return;
+      root.updateMatrixWorld(true);
+      for (const h of hands) {
+        // position: where the (stretched) hand really is
+        h.bone.getWorldPosition(tmpP);
+        h.obj.position.copy(root.worldToLocal(tmpP));
+        // rotation: the hand's rotation from the animation alone, without the stretch skewing it
+        tmpQ.identity();
+        for (let o = h.bone; o && o !== root; o = o.parent) tmpQ.premultiply(o.quaternion);
+        h.obj.quaternion.copy(tmpQ).multiply(h.turn);
+      }
+    }
+
     return {
       root,
       model,
       info: d.info,
       play,
-      update: (dt) => mixers.forEach((mx) => mx.update(dt)),
+      hold,
+      held: (hand = "right") => (held[hand] ? held[hand].obj : null),
+      update: (dt) => { mixers.forEach((mx) => mx.update(dt)); followHands(); },
       get playing() { return currentName; },
       bone: (name) => model.getObjectByName(name),
-      clipLength: (name) => (d.clips[name] ? d.clips[name].duration : 0),
+      clipLength: (name) => (clips[name] ? clips[name].duration : 0),
     };
   }
 
@@ -198,5 +397,10 @@ const Models = (() => {
     return model;
   }
 
-  return { CHARACTERS, available, load, loadAll, spawn, byId };
+  return {
+    CHARACTERS, available, load, loadAll, spawn, byId,
+    loadAnims, loadProps, prop,
+    ANIM_SETS: Object.keys(ANIM_SETS), PROPS,
+    animations: () => Object.keys(clips), // names of every animation loaded so far
+  };
 })();

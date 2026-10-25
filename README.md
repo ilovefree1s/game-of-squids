@@ -28,7 +28,7 @@ shared/             ← shared by everyone:
   net.js            ←   online rooms (Supabase Realtime)
   config.js         ←   Supabase URL + publishable key
   models.js         ←   animated KayKit 3D characters
-  models/           ←   the KayKit character + animation files
+  models/           ←   the KayKit character, animation (animations/) and prop (props/) files
   lib/              ←   three.js (3D), its model loader, and supabase-js
 assets/kaykit/      ← the FULL KayKit art packs (source files; the game doesn't load these)
 minigames/
@@ -114,6 +114,24 @@ c.play("Running_A");                    // Idle_A, Walking_A, Running_A, Jump_St
                                         // Jump_Land, Hit_A, Death_A, Cheering, Waving
 c.update(dt);                           // every frame
 ```
+
+**Every** KayKit animation (about 130) and every weapon/prop (44) works in any game.
+They're split into sets that only download when a game asks for them, so nobody waits for files
+their game doesn't use:
+
+```js
+await Models.loadAnims(["ranged", "general"]); // sets: general, movement, movement-advanced, melee,
+                                               // ranged, simulation, special, tools (or "all")
+c.play("Ranged_2H_Shoot");                     // works for any character once its set is loaded
+
+await Models.loadProps(["Skeleton_Crossbow", "shield_round"]);
+c.hold("Skeleton_Crossbow", "right", { turn: [0, 90, 0] }); // turn = extra rotation in the hand (degrees)
+c.hold("shield_round", "left");
+c.hold(null);                                  // empty the right hand
+const bolt = Models.prop("Skeleton_Arrow");    // a loose copy to place anywhere
+```
+
+The full list of animation and prop names is at the top of `shared/models.js`.
 
 Characters: `tracksuit`, `knight`, `barbarian`, `mage`, `ranger`, `rogue`, `rogue-hooded`,
 `skeleton-minion`, `skeleton-warrior`, `skeleton-mage`, `skeleton-rogue` (see `Models.CHARACTERS`).
