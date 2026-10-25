@@ -349,16 +349,19 @@ const Models = (() => {
     // animations plays, lower the character until its lowest bone is just above the floor (the floor is
     // y = 0 of whatever root is placed in); otherwise ease back to normal height.
     const tmpB = new THREE.Vector3();
+    let drop = 0; // how far we've lowered the root; only this part of its height is ours to change
     function groundIfLying(dt) {
       let goal = 0;
       if (LYING.test(currentName)) {
         let lo = Infinity;
         root.updateMatrixWorld(true);
         model.traverse((o) => { if (o.isBone) { o.getWorldPosition(tmpB); root.worldToLocal(tmpB); if (tmpB.y < lo) lo = tmpB.y; } });
-        // lo is measured from the root's own origin, so the root's height that puts that bone 4 in up is 0.1 - lo
+        // lo is measured from the root's own origin, so lowering the root by (lo - 0.1) puts that bone 4 in up
         if (isFinite(lo)) goal = Math.min(0, 0.1 - lo); // (bones sit about 4 in inside the body)
       }
-      root.position.y += (goal - root.position.y) * Math.min(1, dt * 6);
+      const next = drop + (goal - drop) * Math.min(1, dt * 6);
+      root.position.y += next - drop; // games may place the root at any height (a ledge); keep that
+      drop = next;
     }
 
     return {
