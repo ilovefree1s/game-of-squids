@@ -26,6 +26,13 @@ In short:
 - Bump the version in `shared/version.js` with every change. Check what's in `main` first and go
   one higher, so you don't both pick the same number.
 
+## Merging (Justin's preference)
+
+- 2026-10-25: **Justin wants Claude to merge his changes itself.** Don't ask him to click "Merge pull request".
+  After testing, open the pull request and merge it yourself, then tell him in one line what went live
+  and the new version number. If the change touches shared files, still test that Red Light loads and
+  leave Cougar a note below before merging.
+
 ## Leaving a note
 
 To tell the other person something (a shared file changed, a question, something to watch out for),
