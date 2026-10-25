@@ -39,7 +39,9 @@ Hub.register({
     }
 
     // ---------- settings ----------
-    const TIME_LIMIT = 300; // seconds (the show's 5 minutes)
+    const TIME_CHOICES = [1, 2, 3, 4, 5]; // minutes the host can pick
+    let timeMin = (() => { try { const t = +localStorage.getItem("rl:time"); return TIME_CHOICES.includes(t) ? t : 3; } catch { return 3; } })();
+    let matchTime = timeMin * 60; // seconds on the clock for the game being played
     const COUNTDOWN = 3;
     const SPEED = 3.2; // full-speed run
     const STOP_RATE = 26; // how fast you stop when you let go (higher = quicker)
@@ -122,6 +124,8 @@ Hub.register({
       .rl .inp-jump:not(.inp-push):not(.rl-sprint) { display: none !important; } /* no jumping in this game */
       .rl .rl-sprint { position: absolute; z-index: 1; background: rgba(61,180,255,.75); color: #fff; pointer-events: auto; touch-action: none; }
       .rl .rl-sprint.down { background: rgba(61,180,255,1); }
+      .rl-follow { position: absolute; left: 50%; bottom: calc(var(--u) * 3 + 8px); transform: translateX(-50%); z-index: 1;
+                   font-size: clamp(12px, calc(var(--u) * 2.8), 16px); padding: 6px 14px; }
       /* Everything on top of the game is sized from --u = 1% of the game area's height (set in resize()),
          so short phone screens get smaller text instead of a pile-up. */
       .rl { --u: 6px; }
@@ -197,10 +201,17 @@ Hub.register({
       .rl-vol-row span:first-child { width: 7.5em; flex: none; }
       .rl-card .rl-vol-row input { flex: 1; padding: 0; accent-color: #ff3b5c; }
       .rl-vol-n { width: 2.2em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+      .rl-time { background: #14141f; border-radius: 10px; padding: 8px 10px; }
+      .rl-card .rl-time select { width: auto; }
       .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
       .rl-note.bad { color: #ff5c5c; }
       .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
       .rl-player.me { box-shadow: 0 0 0 2px #ffcc33 inset; }
+      .rl-players.pick .rl-player { pointer-events: auto; cursor: pointer; }
+      .rl-player.doll { background: #6b2a8a; }
+      .rl-player.watching { outline: 2px solid #fff; outline-offset: 1px; }
+      .rl-players.pick { max-width: 30%; } /* wrap into rows instead of running into the light label */
+      .rl.tall .rl-players.pick { max-width: 70%; }
       .rl-check { display: flex; align-items: flex-start; gap: 10px; font-size: .88rem; color: var(--text) !important; cursor: pointer; }
       .rl-card .rl-check input { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: #ff3b5c; }
     `;
@@ -368,7 +379,7 @@ Hub.register({
       g.shadowBlur = 0;
       boardTex.needsUpdate = true;
     }
-    drawBoard(clockText(TIME_LIMIT));
+    drawBoard(clockText(matchTime));
     const board = new THREE.Mesh(new THREE.PlaneGeometry(12, 3.75), new THREE.MeshBasicMaterial({ map: boardTex }));
     board.position.set(0, BOARD_Y, BACK_Z + 0.3);
     scene.add(board);
@@ -767,7 +778,7 @@ Hub.register({
         if (kk) {
           root = kk.root;
           kk.hold("Skeleton_Crossbow", "right", { turn: [0, 90, 0] });
-          kk.play("Ranged_2H_Aiming", { fade: 0 });
+          kk.play("Idle_A", { fade: 0 }); // at rest (crossbow lowered) until the light turns red
         } else {
           root = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 1.1, 4, 8), new THREE.MeshLambertMaterial({ color: 0xe8e2d0 }));
           root.position.y = 0.9;
@@ -812,13 +823,13 @@ Hub.register({
       after(rand(0.25, 0.55), () => {
         if (!sn.kk) { shotSound(); return launchBolt(sn.root.position.clone().add(new THREE.Vector3(0, 1.4, 0)), p); }
         sn.kk.play("Ranged_2H_Shoot", { once: true, fade: 0.05 });
+        sn.shotT = 0.9; // let the shot finish before going back to aiming / resting
         after(0.12, () => {
           shotSound();
           const bow = sn.kk.held("right");
           const from = bow ? bow.getWorldPosition(new THREE.Vector3()) : sn.root.position.clone().add(new THREE.Vector3(0, 1.4, 0));
           launchBolt(from, p);
         });
-        after(0.9, () => sn.kk && sn.kk.play("Ranged_2H_Aiming", { fade: 0.2 }));
       });
     }
     function launchBolt(from, p) {
@@ -866,7 +877,7 @@ Hub.register({
     let started = false;
     let done = false;
     let countdown = 0;
-    let clockLeft = TIME_LIMIT;
+    let clockLeft = matchTime;
     let mode = "lobby"; // "lobby" | "solo" | "online"
     let myId = "solo";
     const me = () => order.find((p) => p.id === myId);
@@ -964,7 +975,8 @@ Hub.register({
       }
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
-      p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
+      if (r.sx !== undefined) p.mesh.position.set(r.sx, 0, r.sz); // a random spot picked at the start (see startSpots)
+      else p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
       if (r.dummy) { const i = +r.id.slice(5); p.mesh.position.set(-3 + i * 2, 0, START_Z - 4 - (i % 2) * 3); }
       return p;
     }
@@ -1224,16 +1236,27 @@ Hub.register({
     // ---------- the match ----------
     function renderPlayers() {
       playersEl.innerHTML = "";
+      const watching = wasSpectating; // dead: the chips switch who you're watching
+      playersEl.classList.toggle("pick", watching);
+      if (watching) {
+        const d = el("div", "rl-player doll" + (!specTarget ? " watching" : ""), "👁 Doll");
+        d.onclick = () => { specTarget = null; say(""); renderPlayers(); };
+        playersEl.append(d);
+      }
       order.forEach((p) => {
         let cls = "rl-player";
         if (p.out) cls += " out";
         else if (p.finished) cls += " finished";
         if (mode === "online" && p.id === myId) cls += " me";
         else if (allied(p)) cls += " ally";
-        const label = mode === "online" ? `${p.num} ${p.name}` : p.num;
-        playersEl.append(el("div", cls, (p.finished ? "✓ " : "") + label));
+        const label = mode === "online" || p.cpu ? `${p.num} ${p.name}` : p.num;
+        if (watching && specTarget === p.id) cls += " watching";
+        const chip = el("div", cls, (p.finished ? "✓ " : "") + label);
+        if (watching && !p.dummy) chip.onclick = () => { specTarget = p.id; free.on = false; followBtn.hidden = true; say(""); renderPlayers(); };
+        playersEl.append(chip);
       });
     }
+    let specTarget = null; // dead players: whose view they're watching (null = the doll's eyes)
     let lastClock = "";
     function renderTimer() {
       const s = started ? clockText(Math.max(0, Math.ceil(clockLeft))) : "";
@@ -1405,6 +1428,10 @@ Hub.register({
       bolts.length = 0;
       started = done = false;
       wasSpectating = false;
+      specTarget = null;
+      lastWatched = null;
+      free.on = false;
+      followBtn.hidden = true;
       camera.fov = 58;
       camera.updateProjectionMatrix();
       phase = "idle";
@@ -1417,13 +1444,14 @@ Hub.register({
       api.setScore(0);
     }
 
-    function startMatch(roster) {
+    function startMatch(roster, minutes = timeMin) {
       if (order.length) resetMatch();
+      matchTime = minutes * 60;
       order = roster.map((r, k) => addPlayer(r, k, roster.length));
       spawnSnipers();
       started = true;
       done = false;
-      clockLeft = TIME_LIMIT;
+      clockLeft = matchTime;
       countdown = COUNTDOWN;
       lobby.hidden = true;
       setDoll(0, 0); // she faces you while the clock counts down
@@ -1440,7 +1468,7 @@ Hub.register({
 
     // load everything the match needs (max ~10s), then start
     let loadingMatch = false;
-    function beginMatch(roster, id = "") {
+    function beginMatch(roster, id = "", minutes = timeMin) {
       if (loadingMatch) return;
       loadingMatch = true;
       matchId = id;
@@ -1449,7 +1477,7 @@ Hub.register({
       card.append(el("h2", "", "Loading…"));
       lobby.append(card);
       lobby.hidden = false;
-      const go = () => { loadingMatch = false; startMatch(roster); };
+      const go = () => { loadingMatch = false; startMatch(roster, minutes); };
       if (!Models.available()) return go();
       const need = Promise.allSettled([
         Models.loadAll([...roster.map((r) => r.char), ...SNIPER_CHARS], 10000),
@@ -1486,7 +1514,7 @@ Hub.register({
       card.append(el("h2", "", "Red Light, Green Light"));
       card.append(el("div", "rl-help",
         "Move while the doll sings. When she turns around, freeze. If she sees you move, you're shot. " +
-        "Cross the red line within 5 minutes."));
+        "Cross the red line before the clock runs out."));
       if (Models.available()) {
         card.append(el("label", "", "Character"));
         const pick = el("select");
@@ -1522,7 +1550,7 @@ Hub.register({
         const roster = [{ id: "solo", name: "You", num: nums[0], char: myChar }];
         nums.slice(1).forEach((num, i) => roster.push({ id: "dummy" + i, name: "Dummy", num, char: "tracksuit", dummy: true }));
         roster.push(...cpuRoster(cpuSetup, nums));
-        beginMatch(roster);
+        beginMatch(startSpots(roster));
       };
       const controls = el("button", "alt", "🎮 Phone controls layout");
       controls.onclick = () => { lobby.hidden = true; lobbyListEl = null; input.editLayout(() => showMenu()); };
@@ -1546,7 +1574,7 @@ Hub.register({
       lobbyListEl = el("ul", "rl-list");
       lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
 
-      card.append(soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
+      card.append(timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
@@ -1623,7 +1651,7 @@ Hub.register({
               roomNote = "Couldn't connect to the online server. Check your internet."; roomNoteBad = true; renderRoom(roomPlayers);
             }
           },
-        }, { char: myChar, num: myNum, cpus: cpuSetup });
+        }, { char: myChar, num: myNum, cpus: cpuSetup, time: timeMin });
         myId = room.id;
       } catch (err) {
         roomNote = "Online play failed to start: " + err.message; roomNoteBad = true;
@@ -1670,7 +1698,7 @@ Hub.register({
         if (!data.roster.some((r) => r.id === myId)) { roomNote = "The game started without you (room full)."; roomNoteBad = true; return renderRoom(roomPlayers); }
         incoming.clear(); asked.clear(); // unanswered requests expire when the game starts
         room.update({ inGame: true });
-        return beginMatch(data.roster, data.m);
+        return beginMatch(data.roster, data.m, data.time || 3);
       }
       if (!started || data.m !== matchId) return; // not for this game
       const p = order.find((q) => q.id === (data.who || from)); // "who": a computer player the host runs
@@ -1774,6 +1802,8 @@ Hub.register({
       if (inGame) { note = "A game is running in this lobby. You'll join the next one."; bad = false; }
       else if (myIndex >= MAX_ONLINE) { note = `Room is full (${MAX_ONLINE} players).`; bad = true; }
       else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
+      if (iAmHost && !inGame) card.append(timePicker(() => room.update({ time: timeMin })));
+      else if (hostP && hostP.time) card.append(el("div", "rl-row rl-time", `⏱ Time limit: ${hostP.time} minute${hostP.time === 1 ? "" : "s"}`));
       if (iAmHost && !inGame) {
         card.append(cpuPanel(cpuSetup, true, (soft) => { saveCpus(); room.update({ cpus: cpuSetup }); if (!soft) renderRoom(roomPlayers); }));
       } else if (hostP && hostP.cpus && hostP.cpus.count) {
@@ -1796,11 +1826,12 @@ Hub.register({
     function hostStart(list) {
       const roster = list.slice(0, MAX_ONLINE).map((p) => ({ id: p.id, name: p.name, num: p.num || randomNumbers(1)[0], char: p.char || "tracksuit" }));
       roster.push(...cpuRoster(cpuSetup, roster.map((r) => r.num)));
+      startSpots(roster);
       const m = Math.random().toString(36).slice(2, 10);
-      room.send({ t: "start", m, roster });
+      room.send({ t: "start", m, roster, time: timeMin });
       room.update({ inGame: true });
       incoming.clear(); asked.clear();
-      beginMatch(roster, m);
+      beginMatch(roster, m, timeMin);
     }
 
     // The results of a game: how everyone did, how they died, and their shoving stats.
@@ -1827,6 +1858,24 @@ Hub.register({
         ul.append(li);
       });
       return ul;
+    }
+
+    // Everyone starts at a random spot in a loose crowd behind the start line (3 rows, about 5 ft apart).
+    // Online, the host picks the spots and sends them with the roster, so every screen matches.
+    function startSpots(roster) {
+      const cells = [];
+      for (let row = 0; row < 3; row++) {
+        for (let x = -FIELD_HALF + 1.5; x <= FIELD_HALF - 1.5; x += 1.5) cells.push([x, START_Z + 1.4 + row * 1.6]);
+      }
+      for (let i = cells.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [cells[i], cells[j]] = [cells[j], cells[i]]; }
+      let c = 0;
+      roster.forEach((r) => {
+        if (r.dummy) return; // practice dummies have their own places on the field
+        const [x, z] = cells[c++ % cells.length];
+        r.sx = +(x + rand(-0.3, 0.3)).toFixed(2);
+        r.sz = +(z + rand(-0.3, 0.3)).toFixed(2);
+      });
+      return roster;
     }
 
     // computer players for a new game, with numbers nobody else has
@@ -1884,6 +1933,22 @@ Hub.register({
       }
       box.append(el("div", "rl-help", TRAITS.map(([, label, help]) => `${label}: ${help.toLowerCase()}.`).join(" ") + " 1 = least, 5 = most."));
       return box;
+    }
+
+    // ⏱ time limit picker (solo, and the host in the lobby)
+    function timePicker(onChange) {
+      const row = el("div", "rl-row rl-time");
+      const sel = el("select");
+      sel.id = "rl-time";
+      TIME_CHOICES.forEach((m) => { const o = el("option", "", `${m} minute${m === 1 ? "" : "s"}`); o.value = m; if (m === timeMin) o.selected = true; sel.append(o); });
+      sel.addEventListener("keydown", (e) => e.stopPropagation());
+      sel.onchange = () => {
+        timeMin = +sel.value;
+        try { localStorage.setItem("rl:time", timeMin); } catch {}
+        if (onChange) onChange();
+      };
+      row.append(el("b", "who", "⏱ Time limit"), sel);
+      return row;
     }
 
     function volumePanel() {
@@ -2009,15 +2074,28 @@ Hub.register({
           ? faceAngle(sn.target.mesh.position.x - sn.root.position.x, sn.target.mesh.position.z - sn.root.position.z)
           : sn.rest;
         sn.root.rotation.y = lerpAngle(sn.root.rotation.y, goal, dt * 8);
-        if (sn.kk) sn.kk.update(dt);
+        if (sn.kk) {
+          // weapons down while she sings; raised from the moment she starts to turn (and when time's up)
+          sn.shotT = (sn.shotT || 0) - dt;
+          const red = phase === "turn" || phase === "watch" || phase === "over" || sn.busy > 0;
+          if (sn.shotT <= 0) sn.kk.play(red ? "Ranged_2H_Aiming" : "Idle_A", { fade: 0.25 });
+          sn.kk.update(dt);
+        }
       });
       updateBolts(dt);
 
       // camera: behind and above you, looking down the field at the doll.
       // Once you're dead (after a moment to see yourself fall), you watch the rest from the doll's eyes.
       const spectating = mine && mine.dead && time - mine.deadAt > SPECTATE_AFTER && started && !done;
+      const watched = spectating && specTarget ? order.find((q) => q.id === specTarget && !q.left) : null;
       let camGoal, lookGoal;
-      if (spectating) {
+      if (spectating && free.on && !watched) { // looking wherever they dragged to
+        camGoal = DOLL_EYES;
+        const cp = Math.cos(free.pitch);
+        lookGoal = DOLL_EYES.clone().add(new THREE.Vector3(-Math.sin(free.yaw) * cp, Math.sin(free.pitch), -Math.cos(free.yaw) * cp).multiplyScalar(60));
+        camera.fov += (50 - camera.fov) * Math.min(1, dt * 3);
+        camera.updateProjectionMatrix();
+      } else if (spectating && !watched) {
         camGoal = DOLL_EYES;
         const alive = order.filter((q) => !q.out && !q.finished && !q.left && !q.dummy);
         let spread = 0;
@@ -2028,12 +2106,15 @@ Hub.register({
           alive.forEach((q) => (spread = Math.max(spread, q.mesh.position.distanceTo(lookGoal))));
         } else lookGoal = new THREE.Vector3(0, 1, (START_Z + FINISH_Z) / 2);
         // zoom so the group fills the view (far away = zoomed in, like binoculars)
+        // (camera.fov is put back to normal when you watch a player)
         const dist = DOLL_EYES.distanceTo(lookGoal);
         const fov = clamp(THREE.MathUtils.radToDeg(2 * Math.atan((3 + spread) / dist)), 6, 50);
         camera.fov += (fov - camera.fov) * Math.min(1, dt * 2);
         camera.updateProjectionMatrix();
       } else {
-        const focus = mine ? mine.mesh.position : new THREE.Vector3(0, 0, START_Z);
+        const who = watched || mine; // you, or (when you're dead) the player you picked to watch
+        const focus = who ? who.mesh.position : new THREE.Vector3(0, 0, START_Z);
+        if (watched && camera.fov !== 58) { camera.fov = 58; camera.updateProjectionMatrix(); }
         // narrow (upright phone) screens: follow you straight on, a bit further back, so you stay in view
         const narrow = camera.aspect < 1;
         const UP = narrow ? 5.4 : 4.6, BACK = narrow ? 9.5 : 7.5, AHEAD = narrow ? 10 : 12, LOOK_Y = narrow ? 1.6 : 2.2;
@@ -2054,20 +2135,34 @@ Hub.register({
         wasSpectating = spectating;
         camPos.copy(camGoal);
         camLook.copy(lookGoal);
-        if (!spectating) { camera.fov = 58; camera.updateProjectionMatrix(); }
-        if (spectating) say("Watching from the doll's eyes", "");
+        if (!spectating) { camera.fov = 58; camera.updateProjectionMatrix(); free.on = false; followBtn.hidden = true; }
+        if (spectating) {
+          specTarget = null;
+          say((navigator.maxTouchPoints > 0 ? "Watching from the doll's eyes · swipe to look around" : "Watching from the doll's eyes · drag to look around") +
+            "\nTap a player's number at the top to watch from behind them", "");
+          later(() => { if (/doll's eyes/.test(msg.textContent)) say(""); }, 6000);
+        }
+        renderPlayers(); // the number chips become buttons (or stop being buttons)
       }
-      const k = look.dragging && !spectating ? 12 : 4; // follow your finger/mouse closely while dragging
+      const dollView = spectating && !watched;
+      const k = look.dragging && !dollView ? 12 : 4; // follow your finger/mouse closely while dragging
+      if (watched !== lastWatched) { lastWatched = watched; camPos.copy(camGoal); camLook.copy(lookGoal); } // switching who you watch: cut
       camPos.lerp(camGoal, Math.min(1, dt * k));
-      camLook.lerp(lookGoal, Math.min(1, dt * (spectating ? 2.5 : k + 1)));
+      camLook.lerp(lookGoal, Math.min(1, dt * (dollView ? (free.on ? 14 : 2.5) : k + 1)));
       camera.position.copy(camPos);
       camera.lookAt(camLook);
       if (debugCam) { camera.position.set(...debugCam.pos); camera.lookAt(...debugCam.look); }
     }
     let wasSpectating = false;
+    let lastWatched = null;
     // Look around: hold the mouse button and drag, or swipe the game view on a phone (same as Glass Bridge).
     // Let go and the camera eases back behind you. Moving still goes toward the doll, whichever way you look.
     const look = { yaw: 0, pitch: 0, dragging: false, id: null, x: 0, y: 0 };
+    const free = { on: false, yaw: 0, pitch: 0 }; // dragging around while watching from the doll's eyes
+    const followBtn = el("button", "rl-follow", "👁 Follow players");
+    followBtn.hidden = true;
+    followBtn.onclick = () => { free.on = false; followBtn.hidden = true; };
+    wrap.insertBefore(followBtn, lobby);
     const view = renderer.domElement;
     view.addEventListener("pointerdown", (e) => {
       if (look.dragging) return;
@@ -2080,6 +2175,20 @@ Hub.register({
     view.addEventListener("pointermove", (e) => {
       if (!look.dragging || e.pointerId !== look.id) return;
       const w = view.clientWidth || 800;
+      if (wasSpectating && !specTarget) { // from the doll's eyes: look any direction, and it stays there
+        if (!free.on) { // start from wherever the camera is looking now
+          const d = camLook.clone().sub(camPos).normalize();
+          free.yaw = Math.atan2(-d.x, -d.z);
+          free.pitch = Math.asin(clamp(d.y, -1, 1));
+          free.on = true;
+          followBtn.hidden = false;
+        }
+        free.yaw -= ((e.clientX - look.x) / w) * Math.PI * 1.6;
+        free.pitch = clamp(free.pitch - ((e.clientY - look.y) / w) * 2.2, -1.45, 1.45);
+        look.x = e.clientX;
+        look.y = e.clientY;
+        return;
+      }
       look.yaw -= ((e.clientX - look.x) / w) * Math.PI * 1.6; // a full-width swipe turns you ~290°
       look.pitch += ((e.clientY - look.y) / w) * 2.2;
       look.yaw = clamp(look.yaw, -Math.PI, Math.PI); // up to looking straight behind you
