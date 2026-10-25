@@ -14,6 +14,14 @@
 //
 // FIRST PLAYER ACROSS WINS. PUSH shoves whoever is in front of you.
 //
+// SHOW RULES (game option): everyone gets a random place in line. Only the player at the
+// front of the line may jump to new glass; the others can't pass the player ahead of them.
+// The front player has 10 seconds per jump, or the two archers at the end of the bridge shoot.
+// COMPUTER PLAYERS (game option, 0-12): bots that play by the same rules. Online, the host runs them.
+//
+// Controls are from your character's point of view: forward = the way you're facing,
+// left / right turn you. The camera stays behind you.
+//
 // Controls (shared/input.js):
 //   Keyboard   WASD / arrows to move, Space to jump, F to push (3 second cooldown)
 //   Controller left stick / d-pad to move, A / ✕ to jump, X / □ to push
@@ -56,6 +64,10 @@ Hub.register({
     const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
     const SEND_EVERY = 0.1; // online: seconds between position updates
     const PUSH_ENABLED = true; // the PUSH button (F / X□ / phone PUSH)
+    const TURN_SPEED = 2.8; // how fast left / right turns you (radians per second)
+    const SHOW_JUMP_TIME = 10; // show rules: seconds the front player gets for each jump
+    const MAX_BOTS = 12;
+    const ARCHER_CHARS = ["skeleton-rogue", "skeleton-warrior"];
     const BLOCK_SHOVE = PANEL * 0.5; // jump into someone standing on a tile: they slide back half a tile
     const PUSH_RANGE = 1.5; // how far a push reaches
     const PUSH_FORCE = 9; // how hard a push shoves
@@ -81,6 +93,7 @@ Hub.register({
     let respawnPending = false;
     let matchId = ""; // online: messages from an older match are ignored
     const send = (d) => { if (mode === "online" && room) room.send({ ...d, m: matchId }); };
+    const sendFor = (p, d) => send({ ...d, by: p.id }); // a message about player p (you or a bot you run)
     let started = false;
     let done = false;
     let countdown = 0; // > 0 while counting down
@@ -89,7 +102,7 @@ Hub.register({
     let finishCount = 0;
 
     // ---------- game options ----------
-    const DEFAULT_OPTS = { time: 120, showSafe: true, bump: true, freePlay: false };
+    const DEFAULT_OPTS = { time: 120, showSafe: true, bump: true, freePlay: false, show: false, bots: 0 };
     let opts = (() => { // what you picked (remembered)
       try { return { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem("gos:gbOpts") || "{}") }; } catch { return { ...DEFAULT_OPTS }; }
     })();
@@ -99,8 +112,9 @@ Hub.register({
       o.time ? `${o.time}s limit` : "no time limit",
       o.showSafe ? "safe tiles shown" : "safe tiles hidden",
       o.bump ? "bumping on" : "no bumping",
-      o.freePlay ? "free play (instant respawns)" : "respawn when everyone falls",
-    ].join(" · ");
+      o.show ? "show rules (line order, 10 s per jump, archers)" : o.freePlay ? "free play (instant respawns)" : "respawn when everyone falls",
+      o.bots ? `${o.bots} computer player${o.bots === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ");
     const clockText = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
     const ordinal = (n) => n + (["th", "st", "nd", "rd"][(n % 100 - 20) % 10] || ["th", "st", "nd", "rd"][n % 100] || "th");
     const timeouts = [];
@@ -136,7 +150,12 @@ Hub.register({
     };
     const me = () => (mode === "solo" ? order[soloIdx] : order.find((p) => room && p.id === room.id));
     const isMine = (p) => !!p && p === me();
-    const nameOf = (p) => (isMine(p) && mode === "online" ? "You" : mode === "online" ? p.name : `Player ${p.num}`);
+    const nameOf = (p) => (isMine(p) && mode === "online" ? "You" : p.bot || mode === "online" ? p.name : `Player ${p.num}`);
+    // online, the oldest player in the room is the host; the host's game runs the computer players
+    const amHost = () => mode === "online" && room && roomPlayers.length > 0 && roomPlayers[0].id === room.id;
+    const simBots = () => mode === "solo" || amHost();
+    // players whose movement THIS game works out (you, plus the bots if you run them)
+    const local = (p) => !!p && (p === me() || (p.bot && simBots()));
 
     // ---------- styles (removed on cleanup) ----------
     const style = document.createElement("style");
@@ -156,6 +175,10 @@ Hub.register({
       .gb3-pushcd { font-size: .85rem; font-weight: 800; letter-spacing: .05em; text-shadow: 0 2px 6px #000;
                     color: #ff8fb5; font-variant-numeric: tabular-nums; }
       .gb3-pushcd.ready { color: var(--good); }
+      .gb3-player.lead { box-shadow: 0 0 0 2px var(--accent); }
+      .gb3-jumpclock { position: absolute; left: 0; right: 0; top: 60px; text-align: center; pointer-events: none;
+                       font-size: 1.35rem; font-weight: 800; text-shadow: 0 2px 8px #000; color: #fff; }
+      .gb3-jumpclock.low { color: var(--bad); font-size: 1.7rem; }
       .gb3-timer.low { color: var(--bad); }
       .gb3-msg { position: absolute; left: 0; right: 0; bottom: 16px; padding: 0 170px; pointer-events: none; white-space: pre-line;
                  font-size: 1.05rem; text-shadow: 0 2px 6px #000; text-align: center; }
@@ -215,13 +238,14 @@ Hub.register({
     hudRight.append(timerEl, pushCdEl);
     hud.append(playersEl, hudRight);
     const msg = el("div", "gb3-msg", "");
+    const jumpClockEl = el("div", "gb3-jumpclock", "");
     const countEl = el("div", "gb3-count", "");
     const lobby = el("div", "gb3-lobby");
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputEncoding = THREE.sRGBEncoding;
-    wrap.append(renderer.domElement, hud, msg, countEl);
+    wrap.append(renderer.domElement, hud, msg, countEl, jumpClockEl);
     container.append(wrap);
     const input = Input.create(wrap, { push: PUSH_ENABLED });
     wrap.append(lobby); // lobby sits above the phone controls
@@ -532,12 +556,16 @@ Hub.register({
     // ---------- HUD ----------
     function renderPlayers() {
       playersEl.innerHTML = "";
-      order.forEach((p) => {
+      const L = leader();
+      const list = rules.show ? lineOrder() : order;
+      list.forEach((p, i) => {
         let cls = "gb3-player";
         if (p.out) cls += " out";
         else if (p.finished) cls += " finished";
-        if (mode === "online" && isMine(p)) cls += " me";
-        const label = mode === "online" ? `${p.num} ${p.name}` : p.num;
+        if ((mode === "online" || order.some((q) => q.bot)) && isMine(p)) cls += " me";
+        if (p === L) cls += " lead";
+        let label = p.bot ? `🤖 ${p.num}` : mode === "online" ? `${p.num} ${p.name}` : p.num;
+        if (rules.show) label = `${i + 1}. ${label}`;
         playersEl.append(el("div", cls, p.finished ? "✓ " + label : label));
       });
     }
@@ -556,7 +584,41 @@ Hub.register({
     }
 
     // ---------- match ----------
-    const spawnSpot = (k) => new THREE.Vector3(-2.1 + (k % 4) * 1.4, 0, -1.4 + Math.floor(k / 4) * 1.3);
+    const spawnSpot = (k) => new THREE.Vector3(-2.3 + (k % 5) * 1.15, 0, -1.7 + Math.floor(k / 5) * 0.95);
+    const classicSolo = () => mode === "solo" && !order.some((q) => q.bot) && !rules.show; // 3 players, one at a time
+
+    // ---------- the line (show rules) ----------
+    let line = []; // player ids, front of the line first
+    const lineOrder = () => line.map((id) => order.find((q) => q.id === id)).filter(Boolean);
+    const lineAlive = () => lineOrder().filter((q) => !q.out && !q.finished && !q.left);
+    const leader = () => (rules.show ? lineAlive()[0] || null : null);
+    const isLeader = (p) => rules.show && leader() === p;
+    function aheadOf(p) {
+      const a = lineAlive();
+      const i = a.indexOf(p);
+      return i > 0 ? a[i - 1] : null;
+    }
+    // which row someone is on: -1 = start platform, 0..17 = glass rows, 18 = finish
+    function rowOf(p) {
+      const z = p.mesh.position.z;
+      if (z >= START.z0 - 0.4) return -1;
+      if (z <= FINISH.z1 + 0.4) return STEPS;
+      return Math.max(0, Math.min(STEPS - 1, Math.round((FIRST_Z - z) / ROW_GAP)));
+    }
+    // show rules: the furthest row you're allowed onto (you can't pass the player ahead of you)
+    function maxRowFor(p) {
+      if (!rules.show || isLeader(p)) return STEPS;
+      const a = aheadOf(p);
+      return a ? rowOf(a) - 1 : STEPS;
+    }
+    function spotFor(p) { // where p starts / respawns
+      if (classicSolo()) {
+        const k = order.indexOf(p);
+        return new THREE.Vector3(k === 0 ? 0 : k === 1 ? -2.2 : 2.2, 0, k === 0 ? -1.4 : -0.6);
+      }
+      const k = rules.show ? Math.max(0, line.indexOf(p.id)) : order.indexOf(p);
+      return spawnSpot(k);
+    }
 
     function addPlayer(r, k) {
       const mine = mode === "online" && room && r.id === room.id;
@@ -564,8 +626,8 @@ Hub.register({
         ...r,
         out: false, finished: false, best: -1,
         vel: new THREE.Vector3(), onGround: true, phase: 0,
-        target: null, targetRy: 0, lastSent: null, sendT: 0,
-        mesh: makePlayerMesh(r.num, mode === "online" ? r.name : null, mine, r.char),
+        target: null, targetRy: 0, lastSent: null, sendT: 0, ai: null,
+        mesh: makePlayerMesh(r.num, mode === "online" || r.bot ? (r.bot ? `🤖 ${r.num}` : r.name) : null, mine, r.char),
       };
       p.mesh.position.copy(spawnSpot(k));
       return p;
@@ -605,7 +667,7 @@ Hub.register({
 
     // Download everyone's character first (max ~8s), then start.
     let loadingMatch = false;
-    function beginMatch(safeArr, roster, id = "", matchRules = opts) {
+    function beginMatch(safeArr, roster, id = "", matchRules = opts, lineIds = null) {
       if (loadingMatch) return;
       loadingMatch = true;
       if (Models.available()) {
@@ -615,24 +677,31 @@ Hub.register({
         card.append(el("h2", "", "Loading characters…"));
         lobby.append(card);
       }
-      const go = () => { loadingMatch = false; startMatch(safeArr, roster, id, matchRules); };
+      const go = () => { loadingMatch = false; startMatch(safeArr, roster, id, matchRules, lineIds); };
       if (!Models.available()) return go();
-      Models.loadAll(roster.map((r) => r.char || "tracksuit")).then(go);
+      const chars = roster.map((r) => r.char || "tracksuit");
+      const waits = [Models.loadAll(matchRules.show ? [...chars, ...ARCHER_CHARS] : chars)];
+      if (matchRules.show) { // the archers need their crossbows, bolts and aiming animations
+        if (Models.loadAnims) waits.push(Models.loadAnims(["ranged"]).catch(() => {}));
+        if (Models.loadProps) waits.push(Models.loadProps(["Skeleton_Crossbow", "Skeleton_Arrow"]).catch(() => {}));
+      }
+      Promise.race([Promise.allSettled(waits), new Promise((r) => setTimeout(r, 10000))]).then(go);
     }
 
     // roster: [{ id, name, num, char }]
-    function startMatch(safeArr, roster, id = "", matchRules = opts) {
+    function startMatch(safeArr, roster, id = "", matchRules = opts, lineIds = null) {
       if (started) resetMatch();
       rules = { ...DEFAULT_OPTS, ...matchRules };
+      if (rules.show) rules.freePlay = false; // show rules: one life per round
       elapsed = 0;
       finishCount = 0;
       matchId = id;
       safe = safeArr;
       order = roster.map(addPlayer);
-      if (mode === "solo") {
-        // the active solo player stands at the front; the others wait off to the sides
-        order.forEach((p, k) => p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.2 : 2.2, 0, k === 0 ? -1.4 : -0.6));
-      }
+      line = lineIds && lineIds.length ? lineIds.slice() : order.map((q) => q.id);
+      order.forEach((q) => q.mesh.position.copy(spotFor(q)));
+      jump.leaderId = null;
+      spawnArchers();
       started = true;
       lobby.hidden = true;
       countdown = COUNTDOWN;
@@ -640,8 +709,9 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove. Swipe the screen to look around."
-        : "WASD / arrows to move · Space to jump · F to push · hold the mouse and drag to look around") +
+      say((touch ? "Joystick: up = forward, left / right = turn. JUMP, PUSH. Swipe the screen to look around."
+        : "W / ↑ forward · A D / ← → turn · Space jump · F push · drag the mouse to look around") +
+        (rules.show ? "\nShow rules: wait for your turn in line. 10 seconds per jump, or the archers shoot." : "") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -653,18 +723,18 @@ Hub.register({
       const { row, side } = sup;
       if (safe[row] === side) {
         markStepped(row, side);
-        send({ t: "step", row, side });
+        sendFor(p, { t: "step", row, side });
         if (row > p.best) {
           p.best = row;
-          if (mode === "online" || row > soloBest) {
+          if (isMine(p) && (mode === "online" || row > soloBest)) {
             soloBest = Math.max(soloBest, row);
             api.addScore(10);
           }
-          tone(560 + row * 25, 0.2, 0.12);
+          if (isMine(p)) tone(560 + row * 25, 0.2, 0.12);
         }
       } else {
         breakPanel(row, side);
-        send({ t: "break", row, side });
+        sendFor(p, { t: "break", row, side });
       }
     }
 
@@ -713,18 +783,19 @@ Hub.register({
       if (rules.freePlay) {
         // option: respawn right away, no waiting for anyone
         p.falls = (p.falls || 0) + 1;
-        if (mode === "online" && isMine(p)) send({ t: "fell" });
-        if (mode === "solo" || isMine(p)) later(() => respawnOne(p), 1200);
+        if (mode === "online" && local(p)) sendFor(p, { t: "fell" });
+        if (local(p)) later(() => respawnOne(p), 1200);
         return;
       }
       if (mode === "online") {
-        if (isMine(p)) send({ t: "fell" });
+        if (local(p)) sendFor(p, { t: "fell" });
         return checkAllDone();
       }
-      // solo: next player steps up
+      if (!classicSolo()) return checkAllDone(); // solo with bots / show rules: one player each
+      // classic solo: your next player steps up
       later(() => {
         if (done) return;
-        const next = order.findIndex((q) => !q.out && !q.finished);
+        const next = order.findIndex((q) => !q.bot && !q.out && !q.finished);
         if (next < 0) return checkAllDone();
         soloIdx = next;
         const q = me();
@@ -746,7 +817,7 @@ Hub.register({
         ? (p.rank === 1 ? `🏆 ${nameOf(p)} ${isMine(p) ? "win" : "wins"}! (${clockText(p.finishTime)})` : `${nameOf(p)} finished ${ordinal(p.rank)}`)
         : `${nameOf(p)} made it across! (${clockText(p.finishTime)})`, "good");
       if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
-      if (mode === "online" && isMine(p)) send({ t: "finish" });
+      if (mode === "online" && local(p)) sendFor(p, { t: "finish" });
       // first one across wins: the round ends right away
       if (p.rank === 1) later(endMatch, mode === "online" ? 1800 : 0);
     }
@@ -772,12 +843,10 @@ Hub.register({
       p.onGround = true;
       p.target = null;
       p.lastSent = null;
-      if (mode === "solo") p.mesh.position.set(0, 0, -1.4);
-      else p.mesh.position.copy(spawnSpot(order.indexOf(p)));
-      if (isMine(p)) {
-        input.clearJump();
-        send({ t: "respawn" });
-      }
+      p.mesh.position.copy(classicSolo() ? new THREE.Vector3(0, 0, -1.4) : spotFor(p));
+      p.ai = null;
+      if (isMine(p)) input.clearJump();
+      if (local(p)) sendFor(p, { t: "respawn" });
       renderPlayers();
       say(`${nameOf(p)} ${isMine(p) && mode === "online" ? "are" : "is"} back at the start.`);
     }
@@ -786,7 +855,6 @@ Hub.register({
       respawnPending = false;
       if (done) return;
       round++;
-      let k = 0;
       order.forEach((p) => {
         if (p.left) return; // left the room: don't bring them back
         p.out = false;
@@ -796,10 +864,10 @@ Hub.register({
         p.onGround = true;
         p.target = null;
         p.lastSent = null;
-        if (mode === "solo") p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.2 : 2.2, 0, k === 0 ? -1.4 : -0.6);
-        else p.mesh.position.copy(spawnSpot(order.indexOf(p)));
-        k++;
+        p.mesh.position.copy(spotFor(p));
+        p.ai = null;
       });
+      jump.leaderId = null;
       soloIdx = 0;
       input.clearJump();
       countdown = 2;
@@ -825,13 +893,21 @@ Hub.register({
       if (mode === "solo") {
         const left = order.filter((p) => !p.out).length;
         const timeBonus = rules.time ? Math.max(0, Math.ceil(clockLeft)) : 0;
-        if (survivors.length && rules.freePlay) {
+        const winner = order.find((q) => q.rank === 1);
+        if (winner && winner.bot) {
+          say(`🏆 ${winner.name} wins!`, "bad");
+        } else if (survivors.length && rules.freePlay) {
           const falls = me().falls || 0;
           api.addScore(Math.max(0, 150 - falls * 25) + timeBonus);
           say(`You made it across in ${clockText(elapsed)} with ${falls} fall${falls === 1 ? "" : "s"}!`, "good");
         } else if (survivors.length) {
-          api.addScore(left * 50 + timeBonus);
-          say(`You made it across with ${left} player${left === 1 ? "" : "s"} left!`, "good");
+          if (classicSolo()) {
+            api.addScore(left * 50 + timeBonus);
+            say(`You made it across with ${left} player${left === 1 ? "" : "s"} left!`, "good");
+          } else {
+            api.addScore(150 + timeBonus);
+            say(`🏆 You win! (${clockText(elapsed)})`, "good");
+          }
         } else say("Everyone fell. The bridge wins.", "bad");
       } else {
         const winner = order.find((p) => p.rank === 1);
@@ -887,30 +963,57 @@ Hub.register({
 
     // Host: start a match (first game or rematch) with everyone in the room
     function hostStart(list) {
-      const roster = list.slice(0, MAX_ONLINE);
-      const nums = assignNumbers(roster.map((p) => p.num));
+      const humans = list.slice(0, MAX_ONLINE);
+      const bots = opts.bots || 0;
+      const nums = assignNumbers([...humans.map((p) => p.num), ...Array(bots).fill("")]);
+      const roster = [
+        ...humans.map((p, i) => ({ id: p.id, name: p.name, num: nums[i], char: p.char || "tracksuit" })),
+        ...makeBots(bots, nums.slice(humans.length)),
+      ];
       const data = {
         t: "start",
         m: Math.random().toString(36).slice(2, 10),
         safe: randomSafe(),
-        roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i], char: p.char || "tracksuit" })),
+        roster,
+        line: shuffle(roster.map((r) => r.id)),
         opts: { ...opts },
       };
       room.send(data);
       room.update({ inGame: true, opts: { ...opts } });
-      beginMatch(data.safe, data.roster, data.m, data.opts);
+      beginMatch(data.safe, data.roster, data.m, data.opts, data.line);
+    }
+
+    // computer players: everyone in a dark green tracksuit, like the show
+    function makeBots(n, nums) {
+      return Array.from({ length: n }, (_, i) => ({ id: "bot" + i, name: `Bot ${nums[i]}`, num: nums[i], char: "tracksuit", bot: true }));
+    }
+    function shuffle(a) {
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
     }
 
     // ---------- physics ----------
     const shards = [];
     let time = 0;
 
-    function stepLocal(p, dt) {
+    // your controls this frame (bots get theirs from botBrain)
+    const humanCtrl = () => ({ mv: input.move(), jump: input.jump(), push: input.push() });
+
+    let lastWaitMsg = -9;
+    function stepLocal(p, dt, ctrl) {
       const live = !p.out && countdown <= 0 && !done;
-      const mv = live ? input.move() : { x: 0, y: 0 };
-      const wantJump = input.jump() && live;
-      if (input.push() && PUSH_ENABLED && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
+      const mv = live ? ctrl.mv : { x: 0, y: 0 };
+      const wantJump = ctrl.jump && live;
+      if (ctrl.push && PUSH_ENABLED && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
+
+      // your character's point of view: left / right turn you, forward / back move the way you face
+      if (live) p.mesh.rotation.y -= mv.x * TURN_SPEED * dt;
+      const fwd = mv.y >= 0 ? mv.y : mv.y * 0.6; // backing up is a bit slower
+      const dirX = -Math.sin(p.mesh.rotation.y), dirZ = -Math.cos(p.mesh.rotation.y);
 
       if (wantJump && p.onGround) {
         const from = supportAt(P.x, P.z);
@@ -918,17 +1021,27 @@ Hub.register({
         p.vel.y = JUMP_V;
         p.onGround = false;
         p.jumped = true;
-        tone(300, 0.08, 0.05, "triangle");
+        // show rules: not your turn yet -> you can hop, but not forward past the player ahead of you
+        p.noForward = rules.show && rowOf(p) + 1 > maxRowFor(p);
+        if (p.noForward && isMine(p) && time - lastWaitMsg > 2) {
+          lastWaitMsg = time;
+          const a = aheadOf(p);
+          say(a ? `Wait your turn: you can't pass ${nameOf(a)}.` : "Wait your turn.", "bad");
+        }
+        if (isMine(p)) tone(300, 0.08, 0.05, "triangle");
       }
+      // show rules: the start platform has a rail while you wait for your turn
+      const holdBack = rules.show && maxRowFor(p) < 0;
 
       // small fixed steps so landings work the same on fast and slow devices
       const n = Math.max(1, Math.ceil(dt * 120));
       const h = dt / n;
       for (let s = 0; s < n; s++) {
         const k = Math.min(1, (p.onGround ? 14 : 8) * h); // less control in the air
-        p.vel.x += (mv.x * SPEED - p.vel.x) * k;
-        p.vel.z += (-mv.y * SPEED - p.vel.z) * k;
+        p.vel.x += (dirX * fwd * SPEED - p.vel.x) * k;
+        p.vel.z += (dirZ * fwd * SPEED - p.vel.z) * k;
         p.vel.y -= GRAVITY * h;
+        if (p.noForward && !p.onGround && p.vel.z < 0) p.vel.z = 0; // can't jump past the player ahead
 
         const prevY = P.y;
         P.addScaledVector(p.vel, h);
@@ -941,6 +1054,7 @@ Hub.register({
         // walls behind the start and past the finish
         if (P.z > START.z1 - 0.15 && P.y > -1) { P.z = START.z1 - 0.15; p.vel.z = Math.min(0, p.vel.z); }
         if (P.z < FINISH.z0 + 0.15 && P.y > -1) { P.z = FINISH.z0 + 0.15; p.vel.z = Math.max(0, p.vel.z); }
+        if (holdBack && P.y > -0.5 && P.z < START.z0 + 0.3) { P.z = START.z0 + 0.3; p.vel.z = Math.max(0, p.vel.z); }
 
         // only a real jump gets the extra landing help, so you can't walk across the gaps
         const sup = p.out ? null : supportAt(P.x, P.z, p.jumped && !p.onGround ? M_LAND : M);
@@ -951,6 +1065,7 @@ Hub.register({
           p.onGround = true;
           if (!wasGround) {
             p.jumped = false;
+            p.noForward = false;
             p.landedAt = time;
             p.vel.x *= 0.35; // "sticky" landings so you don't slide off a small panel
             p.vel.z *= 0.35;
@@ -970,21 +1085,20 @@ Hub.register({
       if (rules.bump && !p.out) bumpOthers(p);
 
       const speed = Math.hypot(p.vel.x, p.vel.z);
-      if (speed > 0.3 && !p.out) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, Math.atan2(-p.vel.x, -p.vel.z), dt * 12);
       animate(p, speed, !p.onGround, dt);
 
       if (!p.out && P.y < -4) eliminate(p);
       if (P.y < -55) p.mesh.visible = false;
 
-      // online: tell everyone where we are
-      if (mode === "online" && p.mesh.visible) {
+      // online: tell everyone where we are (bots are sent all together by the host, see update)
+      if (mode === "online" && p.mesh.visible && !p.bot) {
         p.sendT += dt;
         const moved = !p.lastSent || P.distanceTo(p.lastSent) > 0.01;
         if (p.sendT >= SEND_EVERY && (moved || p.sendT > 0.5)) {
           p.sendT = 0;
           p.lastSent = P.clone();
           const r2 = (v) => Math.round(v * 100) / 100;
-          send({ t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
+          sendFor(p, { t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
         }
       }
     }
@@ -1018,7 +1132,8 @@ Hub.register({
             if (hl < 0.5) { hx = -nx; hz = -nz; hl = 1; } // barely moving: shove them away from you
             const r2 = (v) => Math.round(v * 100) / 100;
             const sx = r2((hx / hl) * BLOCK_SHOVE), sz = r2((hz / hl) * BLOCK_SHOVE);
-            send({ t: "shove", to: q.id, x: sx, z: sz });
+            sendFor(p, { t: "shove", to: q.id, x: sx, z: sz });
+            if (local(q)) slideBy(q, sx, sz); // a bot you run (or you): apply it here
             startHitAnim(q);
             tone(170, 0.1, 0.1, "square");
           }
@@ -1052,7 +1167,8 @@ Hub.register({
         startHitAnim(q);
       }
       if (hits.length) tone(150, 0.15, 0.12, "square");
-      send({ t: "push", hits });
+      sendFor(p, { t: "push", hits });
+      hits.forEach((h) => { const q = order.find((o) => o.id === h.to); if (q && q.bot && local(q)) getPushed(q, h.x, h.z); });
     }
     let lastCdText = null;
     function updatePushCooldown() {
@@ -1116,14 +1232,232 @@ Hub.register({
         }
       }
     }
-    function getPushed(x, z) {
-      const m = me();
+    function slideBy(q, x, z) {
+      if (q && !q.out && !q.finished) q.slide = { x: x / 0.25, z: z / 0.25, t: 0.25 };
+    }
+    function getPushed(m, x, z) {
       if (!m || m.out || m.finished) return;
       m.vel.x += x;
       m.vel.z += z;
       m.vel.y = Math.max(m.vel.y, 4.5); // knocked off your feet
       m.onGround = false;
       tone(140, 0.15, 0.12, "square");
+    }
+
+    // ---------- computer players ----------
+    // A bot walks to the back of its glass, lines up with the next tile, runs, and jumps near the edge.
+    // It picks a side it knows is safe (stepped on / the other one broke), otherwise it guesses.
+    const NONE = { mv: { x: 0, y: 0 }, jump: false, push: false };
+    const faceAngle = (dx, dz) => Math.atan2(-dx, -dz);
+    function steer(p, tx, tz, go) {
+      const P = p.mesh.position;
+      const want = faceAngle(tx - P.x, tz - P.z);
+      const diff = Math.atan2(Math.sin(want - p.mesh.rotation.y), Math.cos(want - p.mesh.rotation.y));
+      return { x: Math.max(-1, Math.min(1, -diff * 3)), y: go && Math.abs(diff) < 0.5 ? 1 : 0 };
+    }
+    function tileKey(q) {
+      const s = supportAt(q.mesh.position.x, q.mesh.position.z);
+      return s && s.kind === "panel" ? s.row * 2 + s.side : null;
+    }
+    function pickSide(row) {
+      const [a, b] = panels[row];
+      if (a.broken) return 1;
+      if (b.broken) return 0;
+      if (a.stepped || a.known) return 0;
+      if (b.stepped || b.known) return 1;
+      return Math.random() < 0.5 ? 0 : 1; // nobody knows: guess
+    }
+    function botBrain(p, dt) {
+      const ai = p.ai || (p.ai = { state: "think", wait: 0.6 + Math.random() * 1.6 });
+      if (p.out || p.finished || countdown > 0 || done) return NONE;
+      const P = p.mesh.position;
+      if (ai.state === "air") {
+        if (p.onGround) { // landed: catch a breath
+          ai.state = "think";
+          ai.wait = rules.show ? (isLeader(p) ? 1.5 + Math.random() * 4.5 : 0.4 + Math.random()) : 0.2 + Math.random() * 0.7;
+          return NONE;
+        }
+        return { mv: steer(p, ai.tx, ai.tz, true), jump: false, push: false };
+      }
+      if (!p.onGround) return NONE;
+      if (ai.state === "think") {
+        ai.wait -= dt;
+        if (ai.wait > 0) return NONE;
+        const next = rowOf(p) + 1;
+        if (next > maxRowFor(p)) { ai.wait = 0.3; return NONE; } // not my turn yet
+        if (next >= STEPS) { ai.tx = 0; ai.tz = FINISH_Z + 1.2; } // the finish!
+        else {
+          const side = pickSide(next);
+          if (order.some((q) => q !== p && !q.out && tileKey(q) === next * 2 + side)) { ai.wait = 0.4; return NONE; } // taken
+          ai.tx = laneX(side);
+          ai.tz = rowZ(next);
+        }
+        // run-up spot: the back of where I'm standing, lined up with the target
+        const sup = supportAt(P.x, P.z);
+        const cx = sup && sup.kind === "panel" ? laneX(sup.side) : Math.max(-2.4, Math.min(2.4, ai.tx));
+        const cz = sup && sup.kind === "panel" ? rowZ(sup.row) : START.z0 + 1.0;
+        const dx = ai.tx - cx, dz = ai.tz - cz, dl = Math.hypot(dx, dz) || 1;
+        ai.rx = cx - (dx / dl) * 0.5;
+        ai.rz = cz - (dz / dl) * 0.5;
+        ai.state = "runup";
+        ai.t = 0;
+      }
+      ai.t = (ai.t || 0) + dt;
+      if (ai.t > 6) { ai.state = "think"; ai.wait = 0.2; return NONE; } // stuck: start over
+      if (ai.state === "runup") {
+        const d = Math.hypot(ai.rx - P.x, ai.rz - P.z);
+        if (d > 0.22) {
+          const s = steer(p, ai.rx, ai.rz, true);
+          return { mv: { x: s.x, y: s.y * Math.min(1, d * 1.5) }, jump: false, push: false };
+        }
+        ai.state = "aim";
+      }
+      if (ai.state === "aim") {
+        const s = steer(p, ai.tx, ai.tz, false);
+        if (Math.abs(s.x) < 0.12) ai.state = "go";
+        return { mv: { x: s.x, y: 0 }, jump: false, push: false };
+      }
+      // "go": run at it and jump near the edge (or once it's in reach)
+      const s = steer(p, ai.tx, ai.tz, true);
+      const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y);
+      const edge = !supportAt(P.x + fx * 0.45, P.z + fz * 0.45);
+      const d = Math.hypot(ai.tx - P.x, ai.tz - P.z);
+      if (edge || d < 2.45) {
+        ai.state = "air";
+        return { mv: s, jump: true, push: false };
+      }
+      return { mv: s, jump: false, push: false };
+    }
+
+    // ---------- show rules: 10 seconds per jump, archers at the end ----------
+    const jump = { leaderId: null, row: -2, left: SHOW_JUMP_TIME, shot: false };
+    function updateJumpClock(dt) {
+      const L = started && !done && countdown <= 0 ? leader() : null;
+      if (!L) { if (jumpClockEl.textContent) jumpClockEl.textContent = ""; return; }
+      const r = rowOf(L);
+      if (L.id !== jump.leaderId || r !== jump.row) { // new front player, or they made a jump
+        jump.leaderId = L.id;
+        jump.row = r;
+        jump.left = SHOW_JUMP_TIME;
+        jump.shot = false;
+        renderPlayers();
+      }
+      const inAir = L.mesh.position.y > 0.12;
+      if (!inAir) jump.left -= dt;
+      const secs = Math.max(0, Math.ceil(jump.left));
+      jumpClockEl.textContent = jump.shot ? "" : `${isMine(L) ? "YOUR JUMP" : nameOf(L) + " must jump"}: ${secs}`;
+      jumpClockEl.classList.toggle("low", jump.left <= 3);
+      if (jump.left <= 0 && !jump.shot) {
+        jump.shot = true;
+        if (local(L)) { // their own game (or the host, for a bot) calls the shot
+          sendFor(L, { t: "shot" });
+          fire(L);
+        }
+      }
+    }
+
+    // two skeleton archers with crossbows, on posts at the end of the bridge
+    const archers = [];
+    const archerPost = new THREE.BoxGeometry(1.1, 1.6, 1.1);
+    function spawnArchers() {
+      archers.forEach((a) => scene.remove(a.root, a.post));
+      archers.length = 0;
+      if (!rules.show) return;
+      [-1, 1].forEach((s, i) => {
+        const post = new THREE.Mesh(archerPost, metal);
+        post.position.set(s * 2.35, 0.8, FINISH_Z - 1.4);
+        scene.add(post);
+        const root = new THREE.Group();
+        root.position.set(s * 2.35, 1.6, FINISH_Z - 1.4);
+        root.rotation.y = Math.PI; // facing back down the bridge
+        const kk = Models.available() ? Models.spawn(ARCHER_CHARS[i]) : null;
+        if (kk) {
+          root.add(kk.root);
+          if (kk.hold) kk.hold("Skeleton_Crossbow", "right", { turn: [0, 90, 0] });
+          kk.play("Idle_A", { fade: 0 });
+        } else {
+          const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.1, 4, 8), new THREE.MeshStandardMaterial({ color: 0xd8d0c0 }));
+          body.position.y = 0.85;
+          root.add(body);
+        }
+        scene.add(root);
+        archers.push({ root, post, kk, rest: Math.PI, busy: 0, shotT: 0, target: null });
+      });
+    }
+    function updateArchers(dt) {
+      const L = leader();
+      const tense = L && !jump.shot && jump.left < 4; // crossbows up when time is running out
+      archers.forEach((a) => {
+        a.busy -= dt;
+        const t = a.busy > 0 ? a.target : tense ? L : null;
+        const goal = t ? faceAngle(t.mesh.position.x - a.root.position.x, t.mesh.position.z - a.root.position.z) : a.rest;
+        a.root.rotation.y = lerpAngle(a.root.rotation.y, goal, dt * 6);
+        if (a.kk) {
+          a.shotT -= dt;
+          if (a.shotT <= 0) a.kk.play(t ? "Ranged_2H_Aiming" : "Idle_A", { fade: 0.25 });
+          a.kk.update(dt);
+        }
+      });
+    }
+    function fire(p) {
+      if (!archers.length) return hit(p);
+      // the closer archer takes the shot
+      const a = archers.reduce((b, c) => (c.root.position.distanceTo(p.mesh.position) < b.root.position.distanceTo(p.mesh.position) ? c : b));
+      a.target = p;
+      a.busy = 1.6;
+      later(() => {
+        if (a.kk) { a.kk.play("Ranged_2H_Shoot", { once: true, fade: 0.05 }); a.shotT = 0.9; }
+        later(() => {
+          tone(190, 0.28, 0.22, "triangle"); // crossbow twang
+          tone(95, 0.2, 0.16, "sawtooth");
+          const bow = a.kk && a.kk.held ? a.kk.held("right") : null;
+          const from = bow ? bow.getWorldPosition(new THREE.Vector3()) : a.root.position.clone().add(new THREE.Vector3(0, 1.4, 0));
+          launchBolt(from, p);
+        }, 120);
+      }, 350);
+    }
+    const bolts = [];
+    const DOWN = new THREE.Vector3(0, -1, 0); // the bolt model's tip points down
+    function headOf(p) {
+      const kk = p.mesh.userData.kk;
+      const bone = kk ? kk.bone("head") : null;
+      if (!bone) return p.mesh.position.clone().add(new THREE.Vector3(0, 1.75, 0));
+      return bone.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.2, 0));
+    }
+    function launchBolt(from, p) {
+      const obj = (Models.prop && Models.prop("Skeleton_Arrow")) ||
+        new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.8, 6), new THREE.MeshBasicMaterial({ color: 0x5a4030 }));
+      obj.scale.multiplyScalar(1.6);
+      scene.add(obj);
+      bolts.push({ obj, from: from.clone(), p, t: 0, dur: Math.max(0.15, from.distanceTo(p.mesh.position) / 60), life: 0 });
+    }
+    function updateBolts(dt) {
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        const b = bolts[i];
+        if (b.done) { // sticks with the falling body for a moment, then goes
+          b.life += dt;
+          b.obj.position.copy(headOf(b.p));
+          if (b.life > 2.5) { scene.remove(b.obj); bolts.splice(i, 1); }
+          continue;
+        }
+        b.t += dt;
+        const to = headOf(b.p);
+        const k = Math.min(1, b.t / b.dur);
+        const dir = to.clone().sub(b.from).normalize();
+        b.obj.quaternion.setFromUnitVectors(DOWN, dir);
+        b.obj.position.lerpVectors(b.from, to, k);
+        if (k >= 1) { b.done = true; hit(b.p); }
+      }
+    }
+    function hit(p) {
+      tone(80, 0.25, 0.28, "sine");
+      say(`${nameOf(p)} ${isMine(p) && mode === "online" ? "were" : "was"} shot!`, "bad");
+      if (local(p) && !p.out) { // knocked off the bridge
+        const side = p.mesh.position.x >= 0 ? 1 : -1;
+        p.vel.set(side * 3.5, 3, 1);
+        p.onGround = false;
+        eliminate(p);
+      }
     }
 
     function stepRemote(p, dt) {
@@ -1148,10 +1482,21 @@ Hub.register({
           return;
         }
         room.update({ inGame: true });
-        return beginMatch(data.safe, data.roster, data.m, data.opts || DEFAULT_OPTS);
+        return beginMatch(data.safe, data.roster, data.m, data.opts || DEFAULT_OPTS, data.line);
       }
       if (!started || data.m !== matchId) return; // not for this match
-      const p = order.find((q) => q.id === from);
+      if (data.t === "bots") { // the host's computer players
+        if (simBots()) return;
+        (data.list || []).forEach(([id, x, y, z, ry]) => {
+          const q = order.find((o) => o.id === id);
+          if (!q) return;
+          if (!q.target) q.target = new THREE.Vector3();
+          q.target.set(x, y, z);
+          q.targetRy = ry;
+        });
+        return;
+      }
+      const p = order.find((q) => q.id === (data.by || from)); // bots' messages say who they're about
       if (!p) return;
       if (data.t === "pos") {
         if (!p.target) p.target = new THREE.Vector3();
@@ -1163,22 +1508,20 @@ Hub.register({
       } else if (data.t === "shove") {
         const q = order.find((o) => o.id === data.to);
         if (q) startHitAnim(q);
-        if (data.to === room.id) {
-          const m = me();
-          if (m && !m.out && !m.finished) m.slide = { x: data.x / 0.25, z: data.z / 0.25, t: 0.25 };
-        }
+        if (q && local(q)) slideBy(q, data.x, data.z); // me, or a bot I run
       } else if (data.t === "push") {
         startPushAnim(p);
         (data.hits || []).forEach((h) => {
           const q = order.find((o) => o.id === h.to);
           if (q) startHitAnim(q); // everyone sees who got hit
-          if (h.to === room.id) getPushed(h.x, h.z);
+          if (q && local(q)) getPushed(q, h.x, h.z);
         });
       }
       else if (data.t === "break") breakPanel(data.row, data.side);
       else if (data.t === "fell") eliminate(p);
       else if (data.t === "respawn") respawnOne(p);
       else if (data.t === "finish") finish(p);
+      else if (data.t === "shot") { jump.shot = true; fire(p); }
       else if (data.t === "bump" && data.to === room.id) {
         const m = me(); // someone shoved me
         if (m && !m.out && !m.finished && rules.bump) {
@@ -1197,7 +1540,7 @@ Hub.register({
       if (done) return showResults(); // results screen: keep the player list fresh
       const here = new Set(list.map((p) => p.id));
       order.forEach((p) => {
-        if (!p.left && !here.has(p.id)) {
+        if (!p.bot && !p.left && !here.has(p.id)) {
           p.left = true;
           p.mesh.visible = false;
           if (!p.finished) {
@@ -1259,6 +1602,19 @@ Hub.register({
       toggle("showSafe", "Show safe tiles in green");
       toggle("bump", "Players bump into each other");
       toggle("freePlay", "Free play: respawn instantly when you fall");
+      toggle("show", "Show rules: random line order, 10 s per jump, archers");
+      const botRow = el("label", "gb3-opt");
+      const botSel = el("select");
+      for (let n = 0; n <= MAX_BOTS; n++) {
+        const o = el("option", "", n ? `${n}` : "None");
+        o.value = n;
+        if (n === (opts.bots || 0)) o.selected = true;
+        botSel.append(o);
+      }
+      botSel.addEventListener("keydown", (e) => e.stopPropagation());
+      botSel.onchange = () => { opts.bots = +botSel.value; changed(); };
+      botRow.append(el("span", "", "Computer players"), botSel);
+      box.append(botRow);
       det.append(box);
       return det;
     }
@@ -1301,8 +1657,15 @@ Hub.register({
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         mode = "solo";
-        const nums = assignNumbers([myNum, "", ""].slice(0, SOLO_PLAYERS));
-        beginMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num, char: myChar })));
+        const bots = opts.bots || 0;
+        if (!bots && !opts.show) { // classic solo: 3 players, one at a time
+          const nums = assignNumbers([myNum, "", ""].slice(0, SOLO_PLAYERS));
+          return beginMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num, char: myChar })));
+        }
+        // you + computer players
+        const nums = assignNumbers([myNum, ...Array(bots).fill("")]);
+        const roster = [{ id: "solo0", name: "Player " + nums[0], num: nums[0], char: myChar }, ...makeBots(bots, nums.slice(1))];
+        beginMatch(randomSafe(), roster, "", opts, shuffle(roster.map((r) => r.id)));
       };
       const note = el("div", "gb3-note bad");
       const getName = () => {
@@ -1471,6 +1834,8 @@ Hub.register({
 
     const START_VIEW = new THREE.Vector3(0, 0, -1.4);
     let camHeld = false; // true while you're out: the camera waits at the start
+    let camHeading = 0; // the camera follows the way your character faces
+    let botSendT = 0;
 
     // Look around: hold the mouse button and drag, or swipe the game view on a phone.
     // Let go and the camera eases back behind you.
@@ -1522,13 +1887,28 @@ Hub.register({
 
       const mine = me();
       for (const p of order) {
-        if (p === mine) stepLocal(p, dt);
+        if (p === mine) stepLocal(p, dt, humanCtrl());
+        else if (p.bot && simBots()) stepLocal(p, dt, botBrain(p, dt));
         else if (mode === "online") stepRemote(p, dt);
         else if (p.out) { /* solo: fallen players keep falling */ p.vel.y -= GRAVITY * dt; p.mesh.position.addScaledVector(p.vel, dt); animate(p, 0, true, dt); if (p.mesh.position.y < -55) p.mesh.visible = false; }
         else stepIdle(p, dt);
       }
 
       updateEffects(dt);
+      updateJumpClock(dt);
+      updateArchers(dt);
+      updateBolts(dt);
+      // the host sends all its computer players in one message
+      if (mode === "online" && amHost() && started) {
+        botSendT += dt;
+        if (botSendT >= SEND_EVERY) {
+          botSendT = 0;
+          const r2 = (v) => Math.round(v * 100) / 100;
+          const list = order.filter((q) => q.bot && q.mesh.visible)
+            .map((q) => [q.id, r2(q.mesh.position.x), r2(q.mesh.position.y), r2(q.mesh.position.z), r2(q.mesh.rotation.y)]);
+          if (list.length) send({ t: "bots", list });
+        }
+      }
       updatePushCooldown();
       for (let i = shards.length - 1; i >= 0; i--) {
         const s = shards[i];
@@ -1564,9 +1944,12 @@ Hub.register({
       const elev = Math.max(0.2, Math.min(1.35, Math.atan2(CAM_UP, CAM_BACK) + look.pitch));
       const dist = Math.hypot(CAM_UP, CAM_BACK);
       const back = dist * Math.cos(elev), up = dist * Math.sin(elev);
-      const sy = Math.sin(look.yaw), cy = Math.cos(look.yaw);
-      const camGoal = new THREE.Vector3(focus.x * 0.6 + sy * back, baseY + up, focus.z + cy * back);
-      const lookGoal = new THREE.Vector3(focus.x * 0.5 - sy * LOOK_AHEAD, baseY + 0.4, focus.z - cy * LOOK_AHEAD);
+      if (dead) camHeading = 0; // waiting at the start: face the bridge
+      else camHeading = lerpAngle(camHeading, t.mesh.rotation.y, Math.min(1, dt * 6));
+      const yaw = camHeading + look.yaw;
+      const sy = Math.sin(yaw), cy = Math.cos(yaw);
+      const camGoal = new THREE.Vector3(focus.x + sy * back, baseY + up, focus.z + cy * back);
+      const lookGoal = new THREE.Vector3(focus.x - sy * LOOK_AHEAD, baseY + 0.4, focus.z - cy * LOOK_AHEAD);
       const k = look.dragging ? 12 : 4; // follow your finger/mouse closely while dragging
       if (dead && !camHeld) { // snap straight back to the start, no swooping
         camHeld = true;
