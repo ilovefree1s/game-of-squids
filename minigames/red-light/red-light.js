@@ -63,7 +63,8 @@ Hub.register({
     const MAX_CPUS = 12; // computer players, on top of the real ones
     const TRAITS = [["agg", "Aggression", "How often they try to kill players closer to the finish"],
       ["des", "Desperation", "How much they sprint"],
-      ["cow", "Cowardice", "How long they wait to run, and how early they stop"]];
+      ["cow", "Cowardice", "How long they wait to run, and how early they stop"],
+      ["ref", "Reflexes", "How fast they stop when she turns around"]];
     const SEND_EVERY = 0.1; // online: seconds between position updates
     const KILL_CREDIT = 1.5; // caught within this many seconds of a shove or bump = the shover gets the kill
     const FT = 3.281; // feet per meter (distances shown to players are in feet)
@@ -95,7 +96,12 @@ Hub.register({
       return e;
     };
     const timeouts = [];
-    const later = (fn, ms) => timeouts.push(setTimeout(fn, ms));
+    const later = (fn, ms) => timeouts.push(setTimeout(fn, ms)); // real time (screens, music)
+    const timers = []; // game time: these also run during the fast-forward at the end
+    const after = (sec, fn) => timers.push({ at: time + sec, fn });
+    function runTimers() {
+      for (let i = 0; i < timers.length; i++) if (timers[i].at <= time) { const t = timers.splice(i--, 1)[0]; t.fn(); }
+    }
     const rand = (a, b) => a + Math.random() * (b - a);
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const smooth = (t) => t * t * (3 - 2 * t);
@@ -179,9 +185,9 @@ Hub.register({
       .rl-betrayed { color: #ff5c5c; font-weight: 800; }
       .rl-cpus { background: #14141f; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .rl-cpus .rl-row select { width: auto; padding: 4px 8px; }
-      .rl-cpu-grid { display: grid; grid-template-columns: auto repeat(3, minmax(0, 1fr)); gap: 4px 8px; align-items: center; }
+      .rl-cpu-grid { display: grid; grid-template-columns: auto repeat(4, minmax(0, 1fr)); gap: 4px 6px; align-items: center; }
       .rl-cpu-grid select { padding: 3px 4px; }
-      .rl-cpu-h { font-size: .72rem; color: var(--muted); text-align: center; }
+      .rl-cpu-h { font-size: .66rem; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
       .rl-cpu-name { font-size: .85rem; font-weight: 700; white-space: nowrap; }
       .rl-cpu-v { text-align: center; }
       .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
@@ -494,7 +500,7 @@ Hub.register({
         } catch { actx = null; }
       }
       if (actx && actx.state === "suspended") actx.resume();
-      return actx;
+      return simulating ? null : actx; // silent during the fast-forward
     }
     ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, audio, { passive: true }));
     function env(g, t, a, peak, d) {
@@ -590,6 +596,7 @@ Hub.register({
       step();
     }
     function announce(text) { // "Player 067, eliminated." (uses the device's own voice, if it has one)
+      if (simulating) return;
       try {
         if (!window.speechSynthesis) return;
         const u = new SpeechSynthesisUtterance(text);
@@ -607,6 +614,7 @@ Hub.register({
     let chant = null; // { times: [...], lens: [...], base, kind }
     let sungUpTo = -1;
     let roundNo = 0; // goes up each time she turns her back (computer players plan each round)
+    const heardAt = []; // when each syllable of the current song was sung (phase time)
     let scanT = 0;
 
     function makeChant() {
@@ -671,6 +679,7 @@ Hub.register({
       } else if (phase === "sing") {
         while (sungUpTo < 9 && phaseT >= chant.times[sungUpTo + 1]) {
           sungUpTo++;
+          heardAt[sungUpTo] = phaseT;
           sing(sungUpTo, chant.lens[sungUpTo], chant.base);
           koSpans[sungUpTo].classList.add("on");
           roSpans[sungUpTo].classList.add("on");
@@ -783,17 +792,17 @@ Hub.register({
       const sn = best;
       sn.target = p;
       sn.busy = 1.6;
-      later(() => {
+      after(rand(0.25, 0.55), () => {
         if (!sn.kk) { shotSound(); return launchBolt(sn.root.position.clone().add(new THREE.Vector3(0, 1.4, 0)), p); }
         sn.kk.play("Ranged_2H_Shoot", { once: true, fade: 0.05 });
-        later(() => {
+        after(0.12, () => {
           shotSound();
           const bow = sn.kk.held("right");
           const from = bow ? bow.getWorldPosition(new THREE.Vector3()) : sn.root.position.clone().add(new THREE.Vector3(0, 1.4, 0));
           launchBolt(from, p);
-        }, 120);
-        later(() => sn.kk && sn.kk.play("Ranged_2H_Aiming", { fade: 0.2 }), 900);
-      }, rand(250, 550));
+        });
+        after(0.9, () => sn.kk && sn.kk.play("Ranged_2H_Aiming", { fade: 0.2 }));
+      });
     }
     function launchBolt(from, p) {
       const obj = Models.prop("Skeleton_Arrow") || new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.8, 6), new THREE.MeshBasicMaterial({ color: 0x5a4030 }));
@@ -847,7 +856,8 @@ Hub.register({
     let room = null; // online room (shared/net.js)
     let roomPlayers = []; // everyone in the room, oldest first (the first one is the host)
     let matchId = ""; // online: messages from an older match are ignored
-    const send = (d) => { if (mode === "online" && room) room.send({ ...d, m: matchId }); };
+    // (nothing is sent while the host fast-forwards; everyone gets the final results instead)
+    const send = (d, force = false) => { if (mode === "online" && room && (!simulating || force)) room.send({ ...d, m: matchId }); };
     // secret alliances (by player id). They only last for one game.
     const allies = new Set(); // confirmed
     const asked = new Set(); // I asked them, no answer yet
@@ -856,9 +866,13 @@ Hub.register({
     // Is this player moved by this device? You, practice dummies, and (on the host) the computer players.
     const simLocal = (p) => p.id === myId || p.dummy || (p.cpu && leader());
     // computer players: the setup the host picked (remembered on this device)
-    const randomTraits = () => ({ agg: 1 + Math.floor(Math.random() * 5), des: 1 + Math.floor(Math.random() * 5), cow: 1 + Math.floor(Math.random() * 5) });
+    const roll = () => 1 + Math.floor(Math.random() * 5);
+    const randomTraits = () => ({ agg: roll(), des: roll(), cow: roll(), ref: roll() });
     let cpuSetup = (() => {
-      try { const c = JSON.parse(localStorage.getItem("rl:cpus") || "null"); if (c && Array.isArray(c.list)) return c; } catch {}
+      try {
+        const c = JSON.parse(localStorage.getItem("rl:cpus") || "null");
+        if (c && Array.isArray(c.list)) { c.list.forEach((t) => { if (!t.ref) t.ref = roll(); }); return c; } // older saves had no Reflexes
+      } catch {}
       return { count: 0, list: [] };
     })();
     const saveCpus = () => { try { localStorage.setItem("rl:cpus", JSON.stringify(cpuSetup)); } catch {} };
@@ -928,7 +942,7 @@ Hub.register({
         lastHit: null, // { by, kind: "push" | "bump", at } the last time someone shoved or bumped them
         cause: "", by: "", betrayed: false, distFt: 0 };
       if (r.cpu) {
-        p.traits = { agg: r.agg || 3, des: r.des || 3, cow: r.cow || 3 };
+        p.traits = { agg: r.agg || 3, des: r.des || 3, cow: r.cow || 3, ref: r.ref || 3 };
         p.ai = { round: -1, laneX: clamp(rand(-FIELD_HALF + 2, FIELD_HALF - 2), -FIELD_HALF + 1, FIELD_HALF - 1) };
       }
       p.mesh = makePlayerMesh(p, r.id === myId);
@@ -939,6 +953,7 @@ Hub.register({
     }
 
     function animate(p, dt) {
+      if (simulating) return; // nobody's watching: skip the animation work
       const kk = p.mesh.userData.kk;
       if (!kk) {
         if (p.dead) p.mesh.userData.body.rotation.x = Math.min(Math.PI / 2, p.mesh.userData.body.rotation.x + dt * 6);
@@ -1012,10 +1027,13 @@ Hub.register({
 
     // ---------- computer players ----------
     // Traits 1-5. Aggression: how often they go after a player closer to the finish (they line up behind them and
-    // shove just before the song ends, so the victim is still sliding when she turns). Desperation: how much they
-    // sprint (more with little time left). Cowardice: how long they wait before running and how early they stop.
+    // shove just before they think the song will end, so the victim is still sliding when she turns). Desperation:
+    // how much they sprint (more with little time left). Cowardice: how long they wait before running and how early
+    // they stop. Reflexes: how fast they stop when she turns. No inside information: they only know what a player
+    // could see and hear (her song so far, where everyone is).
     const AGG_CHANCE = [0, 0.2, 0.4, 0.65, 0.9];
     const SPRINT_CHANCE = [0.05, 0.25, 0.45, 0.7, 0.9];
+    const REACT = [[0.35, 0.55], [0.28, 0.45], [0.2, 0.36], [0.13, 0.27], [0.08, 0.18]]; // seconds, by Reflexes 1-5
     function newRound(p) { // she just turned her back: decide this round's plan
       const a = p.ai;
       const t = p.traits;
@@ -1025,7 +1043,8 @@ Hub.register({
       // ...and stop earlier in the song. 10 = keep going until she turns, and count on stopping in time
       a.stopAt = clamp(Math.round(10 - (t.cow - 1) * 1.7 + rand(-0.6, 0.6) + nerve), 2, 10);
       a.sprint = Math.random() < Math.min(0.97, SPRINT_CHANCE[t.des - 1] + nerve * 0.12);
-      a.reaction = rand(0.08, 0.38); // how long it takes them to notice she's turning
+      const [r0, r1] = REACT[t.ref - 1];
+      a.reaction = rand(r0, r1); // how long it takes them to notice she's turning (Reflexes)
       a.pushLead = rand(0.15, 0.45); // seconds before the song ends to shove
       a.target = null;
       if (Math.random() < AGG_CHANCE[t.agg - 1]) {
@@ -1040,6 +1059,13 @@ Hub.register({
         }
         a.target = best;
       }
+    }
+    // How long until she stops singing? A guess from the tempo so far, like a person would make.
+    // A song that suddenly speeds up (or slows down) fools them.
+    function guessSongLeft() {
+      if (sungUpTo < 1) return 9; // heard too little to judge
+      const beat = (heardAt[sungUpTo] - heardAt[0]) / sungUpTo;
+      return heardAt[sungUpTo] + beat * (9 - sungUpTo) + beat - phaseT;
     }
     function brain(p) {
       const a = p.ai;
@@ -1065,7 +1091,7 @@ Hub.register({
         const d = Math.hypot(Q.x - P.x, Q.z - P.z);
         if (d > 4 + p.traits.agg * 3) { a.target = null; return brain(p); } // got away
         if (d > 3) sprint = sprint || p.traits.des >= 3; // closing the gap
-        const left = phase === "sing" && chant ? chant.total - phaseT : 9;
+        const left = phase === "sing" ? guessSongLeft() : 9;
         if (d < PUSH_RANGE - 0.05 && left < a.pushLead) {
           p.mesh.rotation.y = faceAngle(Q.x - P.x, Q.z - P.z); // face them and shove
           a.target = null;
@@ -1215,7 +1241,7 @@ Hub.register({
         const traitor = p.betrayed && order.find((q) => q.id === p.by);
         say(`Player ${p.num}, eliminated.` + (traitor ? `\nBetrayed by ${traitor.name}` : ""), "bad");
       }
-      later(checkEnd, 1800);
+      after(1.8, checkEnd);
     }
     function finish(p) {
       if (p.finished || p.out) return;
@@ -1229,10 +1255,31 @@ Hub.register({
       }
       checkEnd();
     }
+    // When every real player is across or out, the rest of the game (computer players) is played out
+    // instantly by the host's game, so the results are complete.
     function checkEnd() {
       if (done || !started) return;
-      // the game ends when every real player is across or out (computer players still on the field don't hold it up)
-      if (order.every((p) => p.dummy || p.cpu || p.left || p.finished || p.dead)) endMatch();
+      const over = (p) => p.dummy || p.left || p.finished || p.dead;
+      if (!order.every((p) => p.cpu || over(p))) return; // real players still playing
+      if (order.every(over)) return endMatch();
+      if (simulating) return;
+      if (leader()) fastForward();
+      else say("Waiting for the host's game to finish the computer players…");
+    }
+    let simulating = false;
+    const SIM_DT = 0.05;
+    function fastForward() {
+      simulating = true;
+      input.showTouch(false);
+      say("Playing out the rest for the computer players…");
+      const chunk = () => {
+        if (!simulating) return;
+        const t0 = performance.now();
+        while (!done && performance.now() - t0 < 25) update(SIM_DT); // in small slices, so the screen doesn't freeze
+        if (!done) timeouts.push(setTimeout(chunk, 0));
+        else simulating = false;
+      };
+      chunk();
     }
     function timeUp() {
       if (phase === "over") return;
@@ -1244,12 +1291,13 @@ Hub.register({
       buzzer();
       say("Time's up.", "bad");
       // everyone still on the field is shot
-      order.filter((p) => !p.finished && !p.out).forEach((p, k) => later(() => caught(p, "time"), 600 + k * 450));
-      later(() => { if (!done) endMatch(); }, 600 + order.length * 450 + 2500);
+      order.filter((p) => !p.finished && !p.out).forEach((p, k) => after(0.6 + k * 0.45, () => caught(p, "time")));
+      after(0.6 + order.length * 0.45 + 2.5, () => { if (!done) endMatch(); });
     }
-    function endMatch() {
+    function endMatch(hostResults = null) {
       if (done) return;
       done = true;
+      simulating = false;
       setPhase("over");
       chantEl.hidden = true;
       input.showTouch(false);
@@ -1261,20 +1309,35 @@ Hub.register({
         say(`You survived Red Light, Green Light with ${clockText(bonus)} to spare.`, "good");
       } else say("You didn't make it.", "bad");
       later(() => musicBox(true, 0.26), 800);
-      if (mode !== "online") { later(() => { musicBox(false); api.gameOver(); }, 5200); return; }
+      results = hostResults || makeResults();
+      results.forEach((r) => (r.mine = r.id === myId));
+      if (mode !== "online") { later(() => { musicBox(false); showSoloResults(); }, 3500); return; }
+      if (leader()) send({ t: "results", results }, true); // complete results (with the computer players) for everyone
       // online: back to the lobby with the results; alliances don't carry over
-      const nameOf = (id) => { const q = order.find((o) => o.id === id); return q ? q.name : "someone"; };
-      results = [...order].filter((p) => !p.dummy)
-        .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0) || b.distFt - a.distFt)
-        .map((p) => (p.alive = !p.out && !p.finished, p.alive && (p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT)), p))
-        .map((p) => ({
-          name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft, cpu: !!p.cpu, alive: !p.out && !p.finished,
-          cause: p.cause, by: p.by ? nameOf(p.by) : "", betrayed: p.betrayed, distFt: Math.round(p.distFt),
-          stats: { ...p.stats, kills: p.stats.kills.map(nameOf) },
-        }));
       allies.clear(); asked.clear(); incoming.clear();
       if (room) room.update({ inGame: false });
       later(() => { musicBox(false); renderRoom(roomPlayers); }, 4500);
+    }
+    function makeResults() {
+      const nameOf = (id) => { const q = order.find((o) => o.id === id); return q ? (q.cpu ? `${q.num} CPU` : q.name) : "someone"; };
+      order.forEach((p) => { if (!p.out && !p.finished) p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT); });
+      return [...order].filter((p) => !p.dummy)
+        .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0) || b.distFt - a.distFt)
+        .map((p) => ({
+          id: p.id, name: p.name, num: p.num, ok: p.finished, left: p.finishLeft, cpu: !!p.cpu, alive: !p.out && !p.finished,
+          cause: p.cause, by: p.by ? nameOf(p.by) : "", betrayed: p.betrayed, distFt: Math.round(p.distFt),
+          stats: { ...p.stats, kills: p.stats.kills.map(nameOf) },
+        }));
+    }
+    function showSoloResults() {
+      lobby.innerHTML = "";
+      lobby.hidden = false;
+      const card = el("div", "rl-card");
+      card.append(el("h2", "", "Results"), resultsList(results));
+      const go = el("button", "", "Continue");
+      go.onclick = () => { lobby.hidden = true; api.gameOver(); };
+      card.append(go);
+      lobby.append(card);
     }
     let results = null; // the last online game's results, shown in the lobby
 
@@ -1282,6 +1345,8 @@ Hub.register({
     function resetMatch() {
       timeouts.forEach(clearTimeout);
       timeouts.length = 0;
+      timers.length = 0;
+      simulating = false;
       musicBox(false);
       order.forEach((p) => {
         scene.remove(p.mesh);
@@ -1519,7 +1584,7 @@ Hub.register({
       [allies, asked, incoming].forEach((set) => [...set].forEach((id) => { if (!here.has(id)) set.delete(id); }));
       if (!started || done) return renderRoom(list);
       order.forEach((p) => { // someone left mid-game
-        if (!p.left && !here.has(p.id)) {
+        if (!p.left && !p.cpu && !here.has(p.id)) { // (computer players aren't connected: they never leave)
           p.left = true;
           p.mesh.visible = false;
           if (!p.finished && !p.dead) { p.out = true; p.cause = "left"; p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT); say(`${p.name} left the game.`, "bad"); }
@@ -1559,6 +1624,10 @@ Hub.register({
         });
         return;
       }
+      if (data.t === "results") { // the host's complete results (computer players played out)
+        if (!done) endMatch(data.results);
+        return;
+      }
       if (data.t === "phase") {
         if (leader()) return;
         if (countdown > 0) { countdown = 0; countEl.textContent = ""; musicBox(false); say(""); }
@@ -1594,27 +1663,7 @@ Hub.register({
       const hostP = list[0];
       card.append(el("h2", "", `${hostP ? hostP.name : myName}'s lobby`));
       if (results) {
-        const ul = el("ul", "rl-list");
-        const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
-        results.forEach((r) => {
-          const li = el("li", "rl-result");
-          let how;
-          if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
-          else if (r.alive) how = `still on the field · made it ${r.distFt} ft`;
-          else {
-            how = r.cause === "push" ? `pushed into the line of fire by ${r.by}`
-              : r.cause === "bump" ? `bumped into the line of fire by ${r.by}` : CAUSE[r.cause] || "eliminated";
-            how += ` · made it ${r.distFt} ft`;
-          }
-          li.append(el("b", "", `${r.ok ? "✅" : r.alive ? "🏃" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
-          if (r.betrayed) li.append(el("span", "rl-betrayed", ` · BETRAYED by ${r.by}`));
-          const st = r.stats;
-          const bits = [`pushes ${st.pushes} (${st.landed} landed)`, `got pushed ${st.gotPushed}`,
-            `sprint bumps ${st.bumpsGiven} given / ${st.bumpsTaken} taken`];
-          if (st.kills.length) bits.push(`got ${st.kills.join(", ")} killed`);
-          li.append(el("div", "rl-stats", bits.join(" · ")));
-          ul.append(li);
-        });
+        const ul = resultsList(results);
         card.append(el("label", "", "Last game"), ul);
       }
       // someone asked me to ally
@@ -1693,6 +1742,32 @@ Hub.register({
       beginMatch(roster, m);
     }
 
+    // The results of a game: how everyone did, how they died, and their shoving stats.
+    function resultsList(rs) {
+      const ul = el("ul", "rl-list");
+      const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
+      rs.forEach((r) => {
+        const li = el("li", "rl-result");
+        let how;
+        if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
+        else if (r.alive) how = `still on the field · made it ${r.distFt} ft`;
+        else {
+          how = r.cause === "push" ? `pushed into the line of fire by ${r.by}`
+            : r.cause === "bump" ? `bumped into the line of fire by ${r.by}` : CAUSE[r.cause] || "eliminated";
+          how += ` · made it ${r.distFt} ft`;
+        }
+        li.append(el("b", "", `${r.ok ? "✅" : r.alive ? "🏃" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
+        if (r.betrayed) li.append(el("span", "rl-betrayed", ` · BETRAYED by ${r.by}`));
+        const st = r.stats;
+        const bits = [`pushes ${st.pushes} (${st.landed} landed)`, `got pushed ${st.gotPushed}`,
+          `sprint bumps ${st.bumpsGiven} given / ${st.bumpsTaken} taken`];
+        if (st.kills.length) bits.push(`got ${st.kills.join(", ")} killed`);
+        li.append(el("div", "rl-stats", bits.join(" · ")));
+        ul.append(li);
+      });
+      return ul;
+    }
+
     // computer players for a new game, with numbers nobody else has
     function cpuRoster(setup, taken) {
       const used = new Set(taken);
@@ -1702,7 +1777,7 @@ Hub.register({
         do num = randomNumbers(1)[0]; while (used.has(num));
         used.add(num);
         const t = setup.list[i] || randomTraits();
-        out.push({ id: "cpu" + i, name: "CPU", num, char: "tracksuit", cpu: true, agg: t.agg, des: t.des, cow: t.cow });
+        out.push({ id: "cpu" + i, name: "CPU", num, char: "tracksuit", cpu: true, agg: t.agg, des: t.des, cow: t.cow, ref: t.ref || 3 });
       }
       return out;
     }
@@ -1797,6 +1872,7 @@ Hub.register({
 
     function update(dt) {
       time += dt;
+      runTimers();
       if (started && !done) {
         if (countdown > 0) {
           const before = Math.ceil(countdown);
@@ -1868,7 +1944,7 @@ Hub.register({
     function frame() {
       raf = requestAnimationFrame(frame);
       const dt = Math.min(frameClock.getDelta(), 0.05);
-      for (let i = 0; i < debugSteps; i++) update(dt); // (debugSteps is 1 except in automated tests)
+      if (!simulating) for (let i = 0; i < debugSteps; i++) update(dt); // (debugSteps is 1 except in automated tests)
       renderer.render(scene, camera);
     }
 
