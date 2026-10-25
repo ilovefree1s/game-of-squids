@@ -37,7 +37,7 @@ Hub.register({
     const COUNTDOWN = 3;
     const SPEED = 3.2; // full-speed run
     const STOP_RATE = 26; // how fast you stop when you let go (higher = quicker)
-    const MOVE_LIMIT = 0.12; // moving faster than this (m/s) while she watches = caught
+    const MOVE_LIMIT = 0.1; // moving faster than this (m/s) while she watches = caught
     const GRACE = 0.15; // seconds after she finishes turning before she starts judging
     const TURN_TO = 0.45; // seconds to spin around and look at you
     const TURN_AWAY = 0.8; // seconds to turn back to the tree
