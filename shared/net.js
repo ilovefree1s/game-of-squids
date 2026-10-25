@@ -34,12 +34,13 @@ const Net = (() => {
     } catch { return make(); }
   })();
 
-  function joinRoom(game, code, name, handlers = {}) {
+  // extra: more info about you everyone in the room can see, e.g. { char: "knight" }
+  function joinRoom(game, code, name, handlers = {}, extra = {}) {
     const c = getClient();
     const ch = c.channel(`gos-${game}-${code}`, {
       config: { broadcast: { self: false }, presence: { key: myId } },
     });
-    let meta = { name, joinedAt: Date.now() };
+    let meta = { ...extra, name, joinedAt: Date.now() };
 
     function players() {
       const state = ch.presenceState();
