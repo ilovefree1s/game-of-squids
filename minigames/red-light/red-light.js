@@ -12,7 +12,8 @@
 //   decides whether *they* moved on red, so internet lag never gets you shot.
 //   SECRET ALLIANCES (lobby only): ask any player to ally. Only they see the request; if they confirm,
 //   each of you sees the other's name in green. Nobody else knows. Alliances reset after every game.
-// LATER: CPU players.
+// COMPUTER PLAYERS: 1-12, each with Aggression, Desperation and Cowardice (1-5). Online, the host's game runs them.
+// Shoving anyone while she's watching gets YOU shot, hidden or not.
 //
 // Art: KayKit characters/props (shared/models.js). The doll, stage, music and sounds are original,
 // built in code (no image or sound files).
@@ -59,6 +60,10 @@ Hub.register({
     const KNOCK_DECAY = 7; // how fast a sprint bump wears off
     const DUMMIES = 4; // practice dummies (solo testing)
     const MAX_ONLINE = 8;
+    const MAX_CPUS = 12; // computer players, on top of the real ones
+    const TRAITS = [["agg", "Aggression", "How often they try to kill players closer to the finish"],
+      ["des", "Desperation", "How much they sprint"],
+      ["cow", "Cowardice", "How long they wait to run, and how early they stop"]];
     const SEND_EVERY = 0.1; // online: seconds between position updates
     const KILL_CREDIT = 1.5; // caught within this many seconds of a shove or bump = the shover gets the kill
     const FT = 3.281; // feet per meter (distances shown to players are in feet)
@@ -172,6 +177,13 @@ Hub.register({
       .rl-result b { color: var(--text); }
       .rl-result .rl-stats { font-size: .78rem; color: var(--muted); margin-top: 3px; }
       .rl-betrayed { color: #ff5c5c; font-weight: 800; }
+      .rl-cpus { background: #14141f; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+      .rl-cpus .rl-row select { width: auto; padding: 4px 8px; }
+      .rl-cpu-grid { display: grid; grid-template-columns: auto repeat(3, minmax(0, 1fr)); gap: 4px 8px; align-items: center; }
+      .rl-cpu-grid select { padding: 3px 4px; }
+      .rl-cpu-h { font-size: .72rem; color: var(--muted); text-align: center; }
+      .rl-cpu-name { font-size: .85rem; font-weight: 700; white-space: nowrap; }
+      .rl-cpu-v { text-align: center; }
       .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
       .rl-note.bad { color: #ff5c5c; }
       .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
@@ -594,6 +606,7 @@ Hub.register({
     let phaseLen = 0;
     let chant = null; // { times: [...], lens: [...], base, kind }
     let sungUpTo = -1;
+    let roundNo = 0; // goes up each time she turns her back (computer players plan each round)
     let scanT = 0;
 
     function makeChant() {
@@ -633,7 +646,7 @@ Hub.register({
         roSpans.forEach((s) => s.classList.remove("on"));
       }
       if (p === "turn") whirSound(TURN_TO);
-      if (p === "away") { whirSound(TURN_AWAY); eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; }); }
+      if (p === "away") { roundNo++; sungUpTo = -1; whirSound(TURN_AWAY); eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; }); }
       if (p === "watch") lockOnSound();
       renderLight();
       if (mode === "online" && leader() && ["away", "sing", "turn", "watch"].includes(p)) {
@@ -840,6 +853,15 @@ Hub.register({
     const asked = new Set(); // I asked them, no answer yet
     const incoming = new Set(); // they asked me
     const allied = (p) => allies.has(p.id);
+    // Is this player moved by this device? You, practice dummies, and (on the host) the computer players.
+    const simLocal = (p) => p.id === myId || p.dummy || (p.cpu && leader());
+    // computer players: the setup the host picked (remembered on this device)
+    const randomTraits = () => ({ agg: 1 + Math.floor(Math.random() * 5), des: 1 + Math.floor(Math.random() * 5), cow: 1 + Math.floor(Math.random() * 5) });
+    let cpuSetup = (() => {
+      try { const c = JSON.parse(localStorage.getItem("rl:cpus") || "null"); if (c && Array.isArray(c.list)) return c; } catch {}
+      return { count: 0, list: [] };
+    })();
+    const saveCpus = () => { try { localStorage.setItem("rl:cpus", JSON.stringify(cpuSetup)); } catch {} };
 
     function textTexture(text, w, h, bg, fg, font) {
       return canvasTex(w, h, (g) => {
@@ -883,7 +905,7 @@ Hub.register({
         g.add(body);
         g.userData.body = body;
       }
-      const name = mode === "online" ? `${p.num} ${p.name}` : p.num;
+      const name = mode === "online" || p.cpu ? `${p.num} ${p.name}` : p.num;
       const color = mine ? "#ffcc33" : allied(p) ? "#3ddc84" : "#ffffff"; // you: yellow · your allies: green
       const tag = new THREE.Sprite(new THREE.SpriteMaterial({
         map: textTexture(name, 384, 64, null, color, "bold 34px sans-serif"), depthTest: false, transparent: true,
@@ -905,6 +927,10 @@ Hub.register({
         stats: { pushes: 0, landed: 0, gotPushed: 0, bumpsGiven: 0, bumpsTaken: 0, kills: [] },
         lastHit: null, // { by, kind: "push" | "bump", at } the last time someone shoved or bumped them
         cause: "", by: "", betrayed: false, distFt: 0 };
+      if (r.cpu) {
+        p.traits = { agg: r.agg || 3, des: r.des || 3, cow: r.cow || 3 };
+        p.ai = { round: -1, laneX: clamp(rand(-FIELD_HALF + 2, FIELD_HALF - 2), -FIELD_HALF + 1, FIELD_HALF - 1) };
+      }
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
       p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
@@ -956,7 +982,8 @@ Hub.register({
     // Move one player that this device is in charge of (you, or a practice dummy).
     function stepBody(p, dt, mine) {
       const ok = live(p);
-      const { mv, len, sprint } = ok && mine ? readMove() : { mv: { x: 0, y: 0 }, len: 0, sprint: false };
+      const ctl = !ok ? null : mine ? readMove() : p.cpu ? brain(p) : null;
+      const { mv, len, sprint } = ctl || { mv: { x: 0, y: 0 }, len: 0, sprint: false };
       if (sprint) p.fromSprint = true;
       else if (len > 0.05) p.fromSprint = false;
       const want = new THREE.Vector3(mv.x, 0, -mv.y).multiplyScalar(sprint ? SPRINT_SPEED : SPEED);
@@ -976,10 +1003,83 @@ Hub.register({
       p.speed = Math.hypot(mx, mz);
       const run = Math.hypot(p.vel.x, p.vel.z);
       if (run > 0.3) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, faceAngle(p.vel.x, p.vel.z), dt * 12);
-      if (mine && ok && input.push() && time - p.lastPush > PUSH_COOLDOWN) doPush(p);
+      const wantPush = mine ? input.push() : !!(ctl && ctl.push);
+      if (ok && wantPush && time - p.lastPush > PUSH_COOLDOWN) doPush(p);
       if (!ok) return;
       if (judging() && p.speed > MOVE_LIMIT && seen(p)) caught(p);
       else if (P.z < FINISH_Z) finish(p);
+    }
+
+    // ---------- computer players ----------
+    // Traits 1-5. Aggression: how often they go after a player closer to the finish (they line up behind them and
+    // shove just before the song ends, so the victim is still sliding when she turns). Desperation: how much they
+    // sprint (more with little time left). Cowardice: how long they wait before running and how early they stop.
+    const AGG_CHANCE = [0, 0.2, 0.4, 0.65, 0.9];
+    const SPRINT_CHANCE = [0.05, 0.25, 0.45, 0.7, 0.9];
+    function newRound(p) { // she just turned her back: decide this round's plan
+      const a = p.ai;
+      const t = p.traits;
+      // the clock makes everyone braver: +1 under 2 minutes, +2 under 1 minute, +3 under 30 seconds
+      const nerve = (clockLeft < 120 ? 1 : 0) + (clockLeft < 60 ? 1 : 0) + (clockLeft < 30 ? 1 : 0);
+      a.go = time + Math.max(0, (t.cow - 1 - nerve) * 0.3) + rand(0, 0.35); // cowards wait longer before running
+      // ...and stop earlier in the song. 10 = keep going until she turns, and count on stopping in time
+      a.stopAt = clamp(Math.round(10 - (t.cow - 1) * 1.7 + rand(-0.6, 0.6) + nerve), 2, 10);
+      a.sprint = Math.random() < Math.min(0.97, SPRINT_CHANCE[t.des - 1] + nerve * 0.12);
+      a.reaction = rand(0.08, 0.38); // how long it takes them to notice she's turning
+      a.pushLead = rand(0.15, 0.45); // seconds before the song ends to shove
+      a.target = null;
+      if (Math.random() < AGG_CHANCE[t.agg - 1]) {
+        const P = p.mesh.position, reach = 4 + t.agg * 3;
+        let best = null, bd = reach;
+        for (const q of order) { // someone closer to the finish, not too far away
+          if (q === p || q.out || q.dead || q.finished || q.left) continue;
+          const Q = q.mesh.position;
+          if (Q.z > P.z - 0.3) continue;
+          const d = Math.hypot(Q.x - P.x, Q.z - P.z);
+          if (d < bd) { bd = d; best = q; }
+        }
+        a.target = best;
+      }
+    }
+    function brain(p) {
+      const a = p.ai;
+      const none = { mv: { x: 0, y: 0 }, len: 0, sprint: false, push: false };
+      if (a.round !== roundNo) { a.round = roundNo; newRound(p); }
+      let moving = false;
+      const tg0 = a.target;
+      const hunting = tg0 && !tg0.out && !tg0.dead && !tg0.finished && !tg0.left;
+      if (!hunting) a.target = null;
+      // hunters keep going until they're in position behind their target, whatever their nerve
+      if (phase === "away" || phase === "sing") moving = time >= a.go && (hunting || sungUpTo < a.stopAt);
+      else if (phase === "turn") moving = a.wasMoving && phaseT < a.reaction; // slow to react
+      if (phase !== "turn") a.wasMoving = moving;
+      if (!moving) return none;
+      const P = p.mesh.position;
+      let gx = a.laneX, gz = P.z - 10; // default: straight down their lane
+      let push = false;
+      const tg = a.target;
+      let sprint = a.sprint;
+      if (tg && (phase === "sing" || phase === "away")) {
+        const Q = tg.mesh.position;
+        gx = Q.x; gz = Q.z + 0.85; // line up right behind them
+        const d = Math.hypot(Q.x - P.x, Q.z - P.z);
+        if (d > 4 + p.traits.agg * 3) { a.target = null; return brain(p); } // got away
+        if (d > 3) sprint = sprint || p.traits.des >= 3; // closing the gap
+        const left = phase === "sing" && chant ? chant.total - phaseT : 9;
+        if (d < PUSH_RANGE - 0.05 && left < a.pushLead) {
+          p.mesh.rotation.y = faceAngle(Q.x - P.x, Q.z - P.z); // face them and shove
+          a.target = null;
+          return { ...none, push: true };
+        }
+        if (Math.hypot(gx - P.x, gz - P.z) < 0.35) { // in position: stand still and wait for the moment
+          p.mesh.rotation.y = faceAngle(Q.x - P.x, Q.z - P.z);
+          return none;
+        }
+      }
+      let dx = gx - P.x, dz = gz - P.z;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len; dz /= len;
+      return { mv: { x: dx, y: -dz }, len: 1, sprint, push };
     }
 
     // Another player online: glide toward where their device last said they were.
@@ -1007,7 +1107,7 @@ Hub.register({
         if (runSpeed > SPEED * 1.2 && into > 0.5 && time - (p.knocked[q.id] || -9) > 0.6) {
           p.knocked[q.id] = time;
           noteHit(p, q, "bump");
-          knock(q, p.vel.x / runSpeed, p.vel.z / runSpeed, SPRINT_KNOCK, KNOCK_DECAY, "bump");
+          knock(q, p.vel.x / runSpeed, p.vel.z / runSpeed, SPRINT_KNOCK, KNOCK_DECAY, "bump", p.id);
           p.vel.multiplyScalar(0.5); // the bump slows the sprinter down
         }
       }
@@ -1026,7 +1126,7 @@ Hub.register({
       p.lastPush = time;
       p.pushT = 0.45;
       p.stats.pushes++;
-      send({ t: "push" }); // everyone sees the shove
+      send({ t: "push", who: p.id }); // everyone sees the shove
       const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
       let best = null, bd = PUSH_RANGE;
       for (const q of order) {
@@ -1036,12 +1136,14 @@ Hub.register({
         if (d < bd && (dx * fx + dz * fz) / Math.max(d, 0.001) > Math.cos(Math.PI / 3)) { bd = d; best = q; }
       }
       tone(150, 0.12, 0.08, "triangle");
-      if (best) { noteHit(p, best, "push"); knock(best, fx, fz, PUSH_POWER, PUSH_DECAY, "push"); }
+      if (best) { noteHit(p, best, "push"); knock(best, fx, fz, PUSH_POWER, PUSH_DECAY, "push", p.id); }
+      // shoving while she's watching: she always sees it, even if you're hidden behind someone
+      if (phase === "watch" && !p.out && !p.finished) caught(p, "shove");
     }
 
-    function knock(q, dx, dz, power, decay = KNOCK_DECAY, kind = "push") {
-      if (q.remote) { // their own device moves them: tell it
-        send({ t: "knock", to: q.id, dx, dz, power, decay, kind });
+    function knock(q, dx, dz, power, decay = KNOCK_DECAY, kind = "push", by = myId) {
+      if (!simLocal(q)) { // another device moves them: tell it
+        send({ t: "knock", who: by, to: q.id, dx, dz, power, decay, kind });
         q.hitT = 0.55;
         noise(0.12, power > 5 ? 0.22 : 0.1, "lowpass", 500);
         return;
@@ -1090,7 +1192,7 @@ Hub.register({
       p.vel.set(0, 0, 0);
       p.speed = 0;
       if (info) Object.assign(p, info); // another player's device told us how they died
-      else if (!p.remote) {
+      else if (simLocal(p)) {
         const h = p.lastHit;
         if (reason === "red" && h && time - h.at < KILL_CREDIT) { // shoved or bumped into getting caught
           p.cause = h.kind; p.by = h.by; p.betrayed = allies.has(h.by) || (p.id !== myId && h.by === myId && allied(p));
@@ -1100,10 +1202,8 @@ Hub.register({
       const killer = p.by && order.find((q) => q.id === p.by);
       if (killer && (p.cause === "push" || p.cause === "bump")) killer.stats.kills.push(p.id);
       renderPlayers();
-      if (p.id === myId) {
-        say("She saw you move…", "bad");
-        send({ t: "caught", info: { cause: p.cause, by: p.by, betrayed: p.betrayed, distFt: p.distFt } });
-      }
+      if (p.id === myId) say(reason === "shove" ? "She saw you shove…" : "She saw you move…", "bad");
+      if (simLocal(p) && !p.dummy) send({ t: "caught", who: p.id, info: { cause: p.cause, by: p.by, betrayed: p.betrayed, distFt: p.distFt } });
       fire(p);
     }
     function hit(p) {
@@ -1122,8 +1222,8 @@ Hub.register({
       p.finished = true;
       p.finishLeft = clockLeft;
       renderPlayers();
+      if (simLocal(p) && !p.dummy) send({ t: "finish", who: p.id });
       if (p.id === myId) {
-        send({ t: "finish" });
         say("You made it across! 🎉", "good");
         tone(660, 0.15, 0.12); tone(880, 0.3, 0.12, "sine", 0.15);
       }
@@ -1131,7 +1231,8 @@ Hub.register({
     }
     function checkEnd() {
       if (done || !started) return;
-      if (order.every((p) => p.dummy || p.left || p.finished || p.dead)) endMatch();
+      // the game ends when every real player is across or out (computer players still on the field don't hold it up)
+      if (order.every((p) => p.dummy || p.cpu || p.left || p.finished || p.dead)) endMatch();
     }
     function timeUp() {
       if (phase === "over") return;
@@ -1165,8 +1266,9 @@ Hub.register({
       const nameOf = (id) => { const q = order.find((o) => o.id === id); return q ? q.name : "someone"; };
       results = [...order].filter((p) => !p.dummy)
         .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0) || b.distFt - a.distFt)
+        .map((p) => (p.alive = !p.out && !p.finished, p.alive && (p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT)), p))
         .map((p) => ({
-          name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft,
+          name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft, cpu: !!p.cpu, alive: !p.out && !p.finished,
           cause: p.cause, by: p.by ? nameOf(p.by) : "", betrayed: p.betrayed, distFt: Math.round(p.distFt),
           stats: { ...p.stats, kills: p.stats.kills.map(nameOf) },
         }));
@@ -1284,6 +1386,7 @@ Hub.register({
       dumBox.checked = (() => { try { return localStorage.getItem("rl:dummies") === "1"; } catch { return false; } })();
       dumBox.onchange = () => { try { localStorage.setItem("rl:dummies", dumBox.checked ? "1" : "0"); } catch {} };
       dumRow.append(dumBox, el("span", "", `Add ${DUMMIES} practice dummies (stand still: push them, sprint into them, hide behind them)`));
+      const soloCpus = cpuPanel(cpuSetup, true, () => { saveCpus(); showMenu(); });
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         audio();
@@ -1293,6 +1396,7 @@ Hub.register({
         const nums = randomNumbers(1 + (dumBox.checked ? DUMMIES : 0));
         const roster = [{ id: "solo", name: "You", num: nums[0], char: myChar }];
         nums.slice(1).forEach((num, i) => roster.push({ id: "dummy" + i, name: "Dummy", num, char: "tracksuit", dummy: true }));
+        roster.push(...cpuRoster(cpuSetup, nums));
         beginMatch(roster);
       };
       const controls = el("button", "alt", "🎮 Phone controls layout");
@@ -1317,7 +1421,7 @@ Hub.register({
       lobbyListEl = el("ul", "rl-list");
       lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
 
-      card.append(dumRow, solo, el("label", "", "Play online · your name"), nameIn, host,
+      card.append(soloCpus, dumRow, solo, el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: double-tap a direction and hold it. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
@@ -1394,7 +1498,7 @@ Hub.register({
               roomNote = "Couldn't connect to the online server. Check your internet."; roomNoteBad = true; renderRoom(roomPlayers);
             }
           },
-        }, { char: myChar, num: myNum });
+        }, { char: myChar, num: myNum, cpus: cpuSetup });
         myId = room.id;
       } catch (err) {
         roomNote = "Online play failed to start: " + err.message; roomNoteBad = true;
@@ -1444,7 +1548,17 @@ Hub.register({
         return beginMatch(data.roster, data.m);
       }
       if (!started || data.m !== matchId) return; // not for this game
-      const p = order.find((q) => q.id === from);
+      const p = order.find((q) => q.id === (data.who || from)); // "who": a computer player the host runs
+      if (data.t === "cpus") { // the host's computer players
+        if (leader()) return;
+        data.list.forEach(([id, x, z, ry, sp]) => {
+          const q = order.find((o) => o.id === id);
+          if (!q) return;
+          if (!q.target) q.target = new THREE.Vector3();
+          q.target.set(x, 0, z); q.targetRy = ry; q.speed = sp;
+        });
+        return;
+      }
       if (data.t === "phase") {
         if (leader()) return;
         if (countdown > 0) { countdown = 0; countEl.textContent = ""; musicBox(false); say(""); }
@@ -1464,7 +1578,7 @@ Hub.register({
         const q = order.find((o) => o.id === data.to);
         if (!q) return;
         noteHit(p, q, data.kind || "push");
-        if (q.id === myId) knock(q, data.dx, data.dz, data.power, data.decay, data.kind); // I got shoved
+        if (simLocal(q)) knock(q, data.dx, data.dz, data.power, data.decay, data.kind, p.id); // shoved: me, or a computer player I run
         else q.hitT = 0.55;
       } else if (data.t === "caught") caught(p, "red", data.info || null);
       else if (data.t === "finish") finish(p);
@@ -1481,17 +1595,18 @@ Hub.register({
       card.append(el("h2", "", `${hostP ? hostP.name : myName}'s lobby`));
       if (results) {
         const ul = el("ul", "rl-list");
-        const CAUSE = { red: "moved on red", time: "time ran out", left: "left the game" };
+        const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
         results.forEach((r) => {
           const li = el("li", "rl-result");
           let how;
           if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
+          else if (r.alive) how = `still on the field · made it ${r.distFt} ft`;
           else {
             how = r.cause === "push" ? `pushed into the line of fire by ${r.by}`
               : r.cause === "bump" ? `bumped into the line of fire by ${r.by}` : CAUSE[r.cause] || "eliminated";
             how += ` · made it ${r.distFt} ft`;
           }
-          li.append(el("b", "", `${r.ok ? "✅" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
+          li.append(el("b", "", `${r.ok ? "✅" : r.alive ? "🏃" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
           if (r.betrayed) li.append(el("span", "rl-betrayed", ` · BETRAYED by ${r.by}`));
           const st = r.stats;
           const bits = [`pushes ${st.pushes} (${st.landed} landed)`, `got pushed ${st.gotPushed}`,
@@ -1550,8 +1665,15 @@ Hub.register({
       else if (myIndex >= MAX_ONLINE) { note = `Room is full (${MAX_ONLINE} players).`; bad = true; }
       else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
       if (iAmHost && !inGame) {
+        card.append(cpuPanel(cpuSetup, true, () => { saveCpus(); room.update({ cpus: cpuSetup }); renderRoom(roomPlayers); }));
+      } else if (hostP && hostP.cpus && hostP.cpus.count) {
+        card.append(cpuPanel(hostP.cpus, false));
+      }
+      if (iAmHost && !inGame) {
         const n = Math.min(list.length, MAX_ONLINE);
-        const startBtn = el("button", "", results ? `Play again (${n} player${n === 1 ? "" : "s"})` : n > 1 ? `Start (${n} players)` : "Start (just you)");
+        const c = cpuSetup.count || 0;
+        const who = (n > 1 ? `${n} players` : "just you") + (c ? ` + ${c} CPU${c === 1 ? "" : "s"}` : "");
+        const startBtn = el("button", "", results ? `Play again (${who})` : `Start (${who})`);
         startBtn.onclick = () => hostStart(list);
         card.append(startBtn);
       }
@@ -1563,11 +1685,69 @@ Hub.register({
 
     function hostStart(list) {
       const roster = list.slice(0, MAX_ONLINE).map((p) => ({ id: p.id, name: p.name, num: p.num || randomNumbers(1)[0], char: p.char || "tracksuit" }));
+      roster.push(...cpuRoster(cpuSetup, roster.map((r) => r.num)));
       const m = Math.random().toString(36).slice(2, 10);
       room.send({ t: "start", m, roster });
       room.update({ inGame: true });
       incoming.clear(); asked.clear();
       beginMatch(roster, m);
+    }
+
+    // computer players for a new game, with numbers nobody else has
+    function cpuRoster(setup, taken) {
+      const used = new Set(taken);
+      const out = [];
+      for (let i = 0; i < Math.min(MAX_CPUS, setup.count || 0); i++) {
+        let num;
+        do num = randomNumbers(1)[0]; while (used.has(num));
+        used.add(num);
+        const t = setup.list[i] || randomTraits();
+        out.push({ id: "cpu" + i, name: "CPU", num, char: "tracksuit", cpu: true, agg: t.agg, des: t.des, cow: t.cow });
+      }
+      return out;
+    }
+
+    // The computer players panel: how many (0-12) and each one's traits (1-5). Read-only for everyone but the host.
+    function cpuPanel(setup, editable, onChange) {
+      const box = el("div", "rl-cpus");
+      const head = el("div", "rl-row");
+      head.append(el("b", "who", "🤖 Computer players"));
+      if (editable) {
+        const count = el("select");
+        count.id = "rl-cpu-count";
+        for (let n = 0; n <= MAX_CPUS; n++) { const o = el("option", "", n ? String(n) : "None"); o.value = n; if (n === (setup.count || 0)) o.selected = true; count.append(o); }
+        count.addEventListener("keydown", (e) => e.stopPropagation());
+        count.onchange = () => {
+          setup.count = +count.value;
+          while (setup.list.length < setup.count) setup.list.push(randomTraits()); // new ones get a random mix
+          onChange();
+        };
+        head.append(count);
+      } else head.append(el("span", "rl-tag", setup.count ? String(setup.count) : "None"));
+      box.append(head);
+      if (!setup.count) return box;
+      const grid = el("div", "rl-cpu-grid");
+      grid.append(el("span", ""), ...TRAITS.map(([, label, help]) => { const h = el("span", "rl-cpu-h", label); h.title = help; return h; }));
+      for (let i = 0; i < setup.count; i++) {
+        const t = setup.list[i] || (setup.list[i] = randomTraits());
+        grid.append(el("span", "rl-cpu-name", "CPU " + (i + 1)));
+        TRAITS.forEach(([key]) => {
+          if (!editable) { grid.append(el("span", "rl-cpu-v", String(t[key]))); return; }
+          const sel = el("select");
+          for (let v = 1; v <= 5; v++) { const o = el("option", "", String(v)); o.value = v; if (v === t[key]) o.selected = true; sel.append(o); }
+          sel.addEventListener("keydown", (e) => e.stopPropagation());
+          sel.onchange = () => { t[key] = +sel.value; onChange(); };
+          grid.append(sel);
+        });
+      }
+      box.append(grid);
+      if (editable) {
+        const mix = el("button", "alt", "🎲 Random mix");
+        mix.onclick = () => { setup.list = setup.list.map(() => randomTraits()); onChange(); };
+        box.append(mix);
+      }
+      box.append(el("div", "rl-help", TRAITS.map(([, label, help]) => `${label}: ${help.toLowerCase()}.`).join(" ") + " 1 = least, 5 = most."));
+      return box;
     }
 
     // a small picture of a character's face, for the lobby (made once per character)
@@ -1643,6 +1823,7 @@ Hub.register({
       for (const p of order) {
         if (p === mine) stepBody(p, dt, true);
         else if (p.dummy) stepBody(p, dt, false);
+        else if (p.cpu && leader()) stepBody(p, dt, false);
         else if (p.remote) stepRemote(p, dt);
         animate(p, dt);
       }
@@ -1652,6 +1833,10 @@ Hub.register({
           sendT = SEND_EVERY;
           const P = mine.mesh.position;
           send({ t: "pos", x: +P.x.toFixed(2), z: +P.z.toFixed(2), ry: +mine.mesh.rotation.y.toFixed(2), sp: +mine.speed.toFixed(2) });
+          if (leader()) { // all my computer players in one message
+            const list = order.filter((q) => q.cpu && !q.dead).map((q) => [q.id, +q.mesh.position.x.toFixed(2), +q.mesh.position.z.toFixed(2), +q.mesh.rotation.y.toFixed(2), +q.speed.toFixed(2)]);
+            if (list.length) send({ t: "cpus", list });
+          }
         }
       }
       // snipers turn to their target, then back to watching the field
@@ -1676,17 +1861,19 @@ Hub.register({
       if (debugCam) { camera.position.set(...debugCam.pos); camera.lookAt(...debugCam.look); }
     }
     let debugCam = null; // testing only: a fixed camera
+    let debugSteps = 1; // testing only: run the game faster than real time
 
     const frameClock = new THREE.Clock();
     let raf = 0;
     function frame() {
       raf = requestAnimationFrame(frame);
-      update(Math.min(frameClock.getDelta(), 0.05));
+      const dt = Math.min(frameClock.getDelta(), 0.05);
+      for (let i = 0; i < debugSteps; i++) update(dt); // (debugSteps is 1 except in automated tests)
       renderer.render(scene, camera);
     }
 
     // for automated testing only: lets a test script read the game's state
-    wrap.rlDebug = { set cam(v) { debugCam = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
+    wrap.rlDebug = { set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
 
     showMenu();
     frame();
