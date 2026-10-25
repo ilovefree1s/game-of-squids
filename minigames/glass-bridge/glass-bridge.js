@@ -640,7 +640,8 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove." : "WASD / arrows to move · Space to jump · F to push · controllers work too") +
+      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove. Swipe the screen to look around."
+        : "WASD / arrows to move · Space to jump · F to push · hold the mouse and drag to look around") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -1471,6 +1472,33 @@ Hub.register({
     const START_VIEW = new THREE.Vector3(0, 0, -1.4);
     let camHeld = false; // true while you're out: the camera waits at the start
 
+    // Look around: hold the mouse button and drag, or swipe the game view on a phone.
+    // Let go and the camera eases back behind you.
+    const look = { yaw: 0, pitch: 0, dragging: false, id: null, x: 0, y: 0 };
+    const view = renderer.domElement;
+    view.addEventListener("pointerdown", (e) => {
+      if (look.dragging) return;
+      look.dragging = true;
+      look.id = e.pointerId;
+      look.x = e.clientX;
+      look.y = e.clientY;
+      try { view.setPointerCapture(e.pointerId); } catch {}
+    });
+    view.addEventListener("pointermove", (e) => {
+      if (!look.dragging || e.pointerId !== look.id) return;
+      const w = view.clientWidth || 800;
+      look.yaw -= ((e.clientX - look.x) / w) * Math.PI * 1.6; // a full-width swipe turns you ~290°
+      look.pitch += ((e.clientY - look.y) / w) * 2.2;
+      look.yaw = Math.max(-Math.PI, Math.min(Math.PI, look.yaw)); // up to looking straight behind you
+      look.pitch = Math.max(-0.6, Math.min(0.5, look.pitch));
+      look.x = e.clientX;
+      look.y = e.clientY;
+    });
+    const endLook = (e) => { if (e.pointerId === look.id) { look.dragging = false; look.id = null; } };
+    view.addEventListener("pointerup", endLook);
+    view.addEventListener("pointercancel", endLook);
+    view.addEventListener("lostpointercapture", endLook);
+
     function update(dt) {
       time += dt;
 
@@ -1527,17 +1555,28 @@ Hub.register({
       const dead = !t || t.out;
       const focus = dead ? START_VIEW : t.mesh.position;
       if (!dead) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
-      const camGoal = new THREE.Vector3(focus.x * 0.6, (dead ? 0 : followY) + CAM_UP, focus.z + CAM_BACK);
-      const lookGoal = new THREE.Vector3(focus.x * 0.5, (dead ? 0 : followY) + 0.4, focus.z - LOOK_AHEAD);
+      // look-around: while dragging, the camera swings around you; let go and it eases back
+      if (!look.dragging) {
+        look.yaw += (0 - look.yaw) * Math.min(1, dt * 5);
+        look.pitch += (0 - look.pitch) * Math.min(1, dt * 5);
+      }
+      const baseY = (dead ? 0 : followY);
+      const elev = Math.max(0.2, Math.min(1.35, Math.atan2(CAM_UP, CAM_BACK) + look.pitch));
+      const dist = Math.hypot(CAM_UP, CAM_BACK);
+      const back = dist * Math.cos(elev), up = dist * Math.sin(elev);
+      const sy = Math.sin(look.yaw), cy = Math.cos(look.yaw);
+      const camGoal = new THREE.Vector3(focus.x * 0.6 + sy * back, baseY + up, focus.z + cy * back);
+      const lookGoal = new THREE.Vector3(focus.x * 0.5 - sy * LOOK_AHEAD, baseY + 0.4, focus.z - cy * LOOK_AHEAD);
+      const k = look.dragging ? 12 : 4; // follow your finger/mouse closely while dragging
       if (dead && !camHeld) { // snap straight back to the start, no swooping
         camHeld = true;
         followY = 0;
         camPos.copy(camGoal);
         camLook.copy(lookGoal);
-      } else if (!dead) {
-        camHeld = false;
-        camPos.lerp(camGoal, Math.min(1, dt * 4));
-        camLook.lerp(lookGoal, Math.min(1, dt * 5));
+      } else {
+        if (!dead) camHeld = false;
+        camPos.lerp(camGoal, Math.min(1, dt * k));
+        camLook.lerp(lookGoal, Math.min(1, dt * (k + 1)));
       }
       camera.position.copy(camPos);
       camera.lookAt(camLook);
