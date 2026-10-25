@@ -1388,9 +1388,9 @@ Hub.register({
     }
 
     // ---------- screams: contestants near someone who gets shot ----------
-    // Each contestant still on the field within 20 ft of the victim has a 1-in-3 chance to scream; at most two
+    // Each contestant still on the field within 10 ft of the victim has a 1-in-3 chance to scream; at most two
     // screams per shot. The rolls come from the game id and the victim, so every player hears the same screams.
-    const SCREAM_RANGE = 6.1; // 20 ft
+    const SCREAM_RANGE = 3.05; // 10 ft
     function seeded(str) { // a repeatable random number generator from a string
       let h = 2166136261;
       for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
