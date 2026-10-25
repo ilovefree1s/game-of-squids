@@ -45,9 +45,9 @@ Hub.register({
     const SPRINT_SPEED = SPEED * 2; // double-tap and hold a direction to sprint
     const SPRINT_STOP_RATE = STOP_RATE / 2; // ...and stopping from a sprint takes twice as long
     const TAP_GAP = 0.3; // seconds: how quick the double tap must be
-    const BODY_R = 0.4; // players can't overlap closer than 2 x this
+    const BODY_R = 0.32; // players can't overlap closer than 2 x this (0.32 m = about 12.6 in)
     const SPRINT_KNOCK = 3.5; // sprinting into someone knocks them this hard (m/s)
-    const PUSH_RANGE = 1.5; // how far a push reaches
+    const PUSH_RANGE = 0.75; // how far a push reaches, center to center (about 2 ft 5.5 in)
     const PUSH_POWER = 4; // how hard a push shoves (m/s)
     const PUSH_COOLDOWN = 0.8; // seconds between pushes
     const KNOCK_DECAY = 7; // how fast a knock wears off (lower = slides further)
