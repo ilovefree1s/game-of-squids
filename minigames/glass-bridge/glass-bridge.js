@@ -645,7 +645,13 @@ Hub.register({
     }
 
     // ---------- match ----------
-    const spawnSpot = (k) => new THREE.Vector3(-5.6 + (k % 8) * 1.6, 0, -1.2 + Math.floor(k / 8) * 1.6);
+    // starting spots spread over the whole platform: rows of 5, about 3 apart, middle first
+    const SPAWN_COLS = [[0, -3.2, 3.2, -6.4, 6.4], [-1.6, 1.6, -4.8, 4.8, 0]]; // every other row is staggered
+    const spawnSpot = (k) => {
+      const row = Math.floor(k / 5) % 4, lap = Math.floor(k / 20); // (more than 20 players: squeeze in between)
+      const x = SPAWN_COLS[row % 2][k % 5] + lap * 0.8;
+      return new THREE.Vector3(Math.max(START.x0 + 0.6, Math.min(START.x1 - 0.6, x)), 0, 0.3 + row * 3 + lap * 1.4);
+    };
     const classicSolo = () => mode === "solo" && !order.some((q) => q.bot) && !rules.show; // 3 players, one at a time
 
     // ---------- the line (show rules) ----------
