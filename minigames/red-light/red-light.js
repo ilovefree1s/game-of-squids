@@ -42,6 +42,16 @@ Hub.register({
     const TURN_TO = 0.33; // seconds to spin around and look at you
     const TURN_AWAY = 0.8; // seconds to turn back to the tree
     const WATCH = [2.4, 4.6]; // how long she watches (random in this range)
+    const SPRINT_SPEED = SPEED * 2; // double-tap and hold a direction to sprint
+    const SPRINT_STOP_RATE = STOP_RATE / 2; // ...and stopping from a sprint takes twice as long
+    const TAP_GAP = 0.3; // seconds: how quick the double tap must be
+    const BODY_R = 0.4; // players can't overlap closer than 2 x this
+    const SPRINT_KNOCK = 3.5; // sprinting into someone knocks them this hard (m/s)
+    const PUSH_RANGE = 1.5; // how far a push reaches
+    const PUSH_POWER = 4; // how hard a push shoves (m/s)
+    const PUSH_COOLDOWN = 0.8; // seconds between pushes
+    const KNOCK_DECAY = 7; // how fast a knock wears off (lower = slides further)
+    const DUMMIES = 4; // practice dummies (solo testing)
 
     const FIELD_HALF = 18; // the field is 36 wide
     const START_Z = 0; // start line
@@ -129,6 +139,8 @@ Hub.register({
       .rl-help { font-size: .82rem; color: var(--muted); line-height: 1.5; }
       .rl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .rl-list li { background: #14141f; padding: 6px 10px; border-radius: 6px; }
+      .rl-check { display: flex; align-items: flex-start; gap: 10px; font-size: .88rem; color: var(--text) !important; cursor: pointer; }
+      .rl-card .rl-check input { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: #ff3b5c; }
       @media (pointer: coarse) { .rl-chant { bottom: 175px; } }
       @media (max-width: 600px) { .rl-count { font-size: 4rem; } .rl-chant .ko { font-size: 1.4rem; } .rl-light { top: 54px; } }
     `;
@@ -159,7 +171,7 @@ Hub.register({
     renderer.outputEncoding = THREE.sRGBEncoding;
     wrap.append(renderer.domElement, edgeEl, hud, lightEl, msg, chantEl, countEl);
     container.append(wrap);
-    const input = Input.create(wrap, { push: false });
+    const input = Input.create(wrap); // joystick + PUSH (the jump button is hidden by the CSS above)
     wrap.append(lobby);
     input.showTouch(false);
 
@@ -623,6 +635,31 @@ Hub.register({
     }
     const judging = () => phase === "watch" && phaseT > GRACE;
 
+    // Can she see p? Not if another standing player blocks both her view of p's head and chest.
+    const EYE = new THREE.Vector3(0, 0.12, 1.6); // between her eyes, in head space
+    const eyeW = new THREE.Vector3();
+    function seen(p) {
+      head.updateWorldMatrix(true, false);
+      eyeW.copy(EYE);
+      head.localToWorld(eyeW);
+      const P = p.mesh.position;
+      return [1.7, 1.1].some((y) => !blocked(eyeW, P.x, y, P.z, p));
+    }
+    function blocked(E, tx, ty, tz, target) {
+      const dx = tx - E.x, dz = tz - E.z, len2 = dx * dx + dz * dz;
+      for (const q of order) {
+        if (q === target || q.dead) continue;
+        const Q = q.mesh.position;
+        const t = ((Q.x - E.x) * dx + (Q.z - E.z) * dz) / len2; // where along the sight line q stands
+        if (t <= 0 || t >= 1) continue;
+        const cx = E.x + dx * t - Q.x, cz = E.z + dz * t - Q.z;
+        if (cx * cx + cz * cz > (BODY_R + 0.05) ** 2) continue;
+        const y = E.y + (ty - E.y) * t; // height of the sight line as it passes q
+        if (y < 1.95) return true;
+      }
+      return false;
+    }
+
     // ---------- snipers: skeletons with crossbows on ledges along the walls ----------
     const SNIPER_SPOTS = [-12, -40, -68, -96].flatMap((z) => [[-1, z], [1, z]]);
     const SNIPER_CHARS = ["skeleton-rogue", "skeleton-warrior", "skeleton-minion", "skeleton-mage"];
@@ -785,10 +822,12 @@ Hub.register({
     }
 
     function addPlayer(r, k, n) {
-      const p = { ...r, vel: new THREE.Vector3(), out: false, dead: false, finished: false, speed: 0 };
+      const p = { ...r, vel: new THREE.Vector3(), knock: new THREE.Vector3(), out: false, dead: false, finished: false,
+        speed: 0, pushT: 0, hitT: 0, lastPush: -9, knocked: {} };
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
       p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
+      if (r.dummy) { const i = +r.id.slice(5); p.mesh.position.set(-3 + i * 2, 0, START_Z - 4 - (i % 2) * 3); }
       return p;
     }
 
@@ -799,29 +838,110 @@ Hub.register({
         return;
       }
       if (p.dead) kk.play("Death_A", { once: true, fade: 0.08 });
+      else if (p.pushT > 0) kk.play("Melee_Block_Attack", { once: true, speed: 1.6, fade: 0.05 }); // two-handed shove
+      else if (p.hitT > 0) kk.play("Hit_A", { once: true, fade: 0.05 });
       else if (p.finished) kk.play("Cheering");
-      else if (p.speed > 2.2) kk.play("Running_A", { speed: clamp(p.speed / 3.4, 0.7, 1.3) });
+      else if (p.speed > 2.2) kk.play("Running_A", { speed: clamp(p.speed / 3.4, 0.7, 1.9) });
       else if (p.speed > 0.25) kk.play("Walking_A", { speed: clamp(p.speed / 1.5, 0.6, 1.4) });
       else kk.play("Idle_A");
       kk.update(dt);
+      p.pushT -= dt;
+      p.hitT -= dt;
     }
 
-    function stepLocal(p, dt) {
-      const live = started && !done && countdown <= 0 && !p.out && !p.finished;
-      const mv = live ? input.move() : { x: 0, y: 0 };
+    // sprint: double-tap a direction and hold it (keyboard, stick or phone joystick)
+    const tap = { held: false, downAt: -9, upAt: -9, dir: null, sprint: false };
+    function readMove() {
+      const mv = input.move();
       const len = Math.hypot(mv.x, mv.y);
-      const want = new THREE.Vector3(mv.x, 0, -mv.y).multiplyScalar(SPEED);
-      p.vel.lerp(want, 1 - Math.exp(-dt * (len > 0.05 ? 10 : STOP_RATE)));
-      if (p.vel.lengthSq() < 0.0004) p.vel.set(0, 0, 0);
+      const held = len > 0.5;
+      if (held && !tap.held) {
+        const dir = { x: mv.x / len, y: mv.y / len };
+        const quick = time - tap.upAt < TAP_GAP && tap.upAt - tap.downAt < TAP_GAP;
+        const same = !!tap.dir && dir.x * tap.dir.x + dir.y * tap.dir.y > 0.7;
+        tap.sprint = quick && same;
+        tap.downAt = time;
+        tap.dir = dir;
+      } else if (!held && tap.held) {
+        tap.upAt = time;
+        tap.sprint = false;
+      }
+      tap.held = held;
+      return { mv, len, sprint: tap.sprint && held };
+    }
+
+    const live = (p) => started && !done && countdown <= 0 && !p.out && !p.finished;
+
+    // Move one player that this device is in charge of (you, or a practice dummy).
+    function stepBody(p, dt, mine) {
+      const ok = live(p);
+      const { mv, len, sprint } = ok && mine ? readMove() : { mv: { x: 0, y: 0 }, len: 0, sprint: false };
+      if (sprint) p.fromSprint = true;
+      else if (len > 0.05) p.fromSprint = false;
+      const want = new THREE.Vector3(mv.x, 0, -mv.y).multiplyScalar(sprint ? SPRINT_SPEED : SPEED);
+      const rate = len > 0.05 ? 10 : p.fromSprint ? SPRINT_STOP_RATE : STOP_RATE;
+      p.vel.lerp(want, 1 - Math.exp(-dt * rate));
+      if (p.vel.lengthSq() < 0.0004) { p.vel.set(0, 0, 0); p.fromSprint = false; }
+      p.knock.multiplyScalar(Math.exp(-dt * KNOCK_DECAY)); // getting shoved
+      if (p.knock.lengthSq() < 0.0004) p.knock.set(0, 0, 0);
       const P = p.mesh.position;
-      P.addScaledVector(p.vel, dt);
+      P.addScaledVector(p.vel, dt).addScaledVector(p.knock, dt);
+      collide(p);
       P.x = clamp(P.x, -FIELD_HALF, FIELD_HALF);
       P.z = clamp(P.z, BACK_Z + 26, FRONT_Z - 3);
-      p.speed = Math.hypot(p.vel.x, p.vel.z);
-      if (p.speed > 0.3) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, faceAngle(p.vel.x, p.vel.z), dt * 12);
-      if (!live) return;
-      if (judging() && p.speed > MOVE_LIMIT) caught(p);
+      const mx = p.vel.x + p.knock.x, mz = p.vel.z + p.knock.z;
+      p.speed = Math.hypot(mx, mz);
+      const run = Math.hypot(p.vel.x, p.vel.z);
+      if (run > 0.3) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, faceAngle(p.vel.x, p.vel.z), dt * 12);
+      if (mine && ok && input.push() && time - p.lastPush > PUSH_COOLDOWN) doPush(p);
+      if (!ok) return;
+      if (judging() && p.speed > MOVE_LIMIT && seen(p)) caught(p);
       else if (P.z < FINISH_Z) finish(p);
+    }
+
+    // Bodies don't overlap. Sprinting into someone knocks them forward.
+    function collide(p) {
+      const P = p.mesh.position;
+      for (const q of order) {
+        if (q === p || q.dead) continue;
+        const Q = q.mesh.position;
+        let dx = P.x - Q.x, dz = P.z - Q.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= BODY_R * 2) continue;
+        if (d < 0.001) { dx = 1; dz = 0; } else { dx /= d; dz /= d; }
+        P.x = Q.x + dx * BODY_R * 2;
+        P.z = Q.z + dz * BODY_R * 2;
+        const into = -(p.vel.x * dx + p.vel.z * dz); // how fast p was heading at q
+        const runSpeed = Math.hypot(p.vel.x, p.vel.z);
+        if (runSpeed > SPEED * 1.2 && into > 0.5 && time - (p.knocked[q.id] || -9) > 0.6) {
+          p.knocked[q.id] = time;
+          knock(q, p.vel.x / runSpeed, p.vel.z / runSpeed, SPRINT_KNOCK);
+          p.vel.multiplyScalar(0.5); // the bump slows the sprinter down
+        }
+      }
+    }
+
+    // Shove whoever is right in front of you.
+    function doPush(p) {
+      p.lastPush = time;
+      p.pushT = 0.45;
+      const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
+      let best = null, bd = PUSH_RANGE;
+      for (const q of order) {
+        if (q === p || q.dead || q.finished) continue;
+        const dx = q.mesh.position.x - p.mesh.position.x, dz = q.mesh.position.z - p.mesh.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d < bd && (dx * fx + dz * fz) / Math.max(d, 0.001) > Math.cos(Math.PI / 3)) { bd = d; best = q; }
+      }
+      tone(150, 0.12, 0.08, "triangle");
+      if (best) knock(best, fx, fz, PUSH_POWER);
+    }
+
+    function knock(q, dx, dz, power) {
+      q.knock.x += dx * power;
+      q.knock.z += dz * power;
+      q.hitT = 0.4;
+      noise(0.1, 0.1, "lowpass", 500);
     }
 
     // ---------- the match ----------
@@ -880,7 +1000,7 @@ Hub.register({
     }
     function checkEnd() {
       if (done || !started) return;
-      if (order.every((p) => p.finished || p.dead)) endMatch();
+      if (order.every((p) => p.dummy || p.finished || p.dead)) endMatch();
     }
     function timeUp() {
       setPhase("over");
@@ -923,7 +1043,8 @@ Hub.register({
       input.showTouch(true);
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move." : "WASD / arrows to move · controllers work too") + "\nMove only while she sings. Freeze when she turns.");
+      say((touch ? "Joystick to move · PUSH to shove." : "WASD / arrows to move · F to push") + " · double-tap and hold to sprint" +
+        "\nMove only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
     }
@@ -939,7 +1060,7 @@ Hub.register({
       if (!Models.available()) return go();
       const need = Promise.allSettled([
         Models.loadAll([...roster.map((r) => r.char), ...SNIPER_CHARS], 10000),
-        Models.loadAnims(["ranged"]),
+        Models.loadAnims(["ranged", "melee"]),
         Models.loadProps(["Skeleton_Crossbow", "Skeleton_Arrow"]),
       ]);
       Promise.race([need, new Promise((r) => setTimeout(r, 10000))]).then(go);
@@ -949,7 +1070,7 @@ Hub.register({
     let myChar = (() => { try { return Models.byId(localStorage.getItem("gos:char") || "tracksuit").id; } catch { return "tracksuit"; } })();
     if (Models.available()) {
       Models.load(myChar).catch(() => {}); // start downloading early
-      Models.loadAnims(["ranged"]).catch(() => {});
+      Models.loadAnims(["ranged", "melee"]).catch(() => {});
       Models.loadProps(["Skeleton_Crossbow", "Skeleton_Arrow"]).catch(() => {});
     }
 
@@ -978,20 +1099,30 @@ Hub.register({
         };
         card.append(pick);
       }
+      const dumRow = el("label", "rl-check");
+      const dumBox = el("input");
+      dumBox.type = "checkbox";
+      dumBox.id = "rl-dummies";
+      dumBox.checked = (() => { try { return localStorage.getItem("rl:dummies") === "1"; } catch { return false; } })();
+      dumBox.onchange = () => { try { localStorage.setItem("rl:dummies", dumBox.checked ? "1" : "0"); } catch {} };
+      dumRow.append(dumBox, el("span", "", `Add ${DUMMIES} practice dummies (stand still: push them, sprint into them, hide behind them)`));
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         audio();
         mode = "solo";
         myId = "solo";
-        const [num] = randomNumbers(1);
-        beginMatch([{ id: "solo", name: "You", num, char: myChar }]);
+        const nums = randomNumbers(1 + (dumBox.checked ? DUMMIES : 0));
+        const roster = [{ id: "solo", name: "You", num: nums[0], char: myChar }];
+        nums.slice(1).forEach((num, i) => roster.push({ id: "dummy" + i, name: "Dummy", num, char: "tracksuit", dummy: true }));
+        beginMatch(roster);
       };
       const online = el("button", "alt", "Play online (coming next)");
       online.disabled = true;
       const controls = el("button", "alt", "🎮 Phone controls layout");
       controls.onclick = () => { lobby.hidden = true; input.editLayout(() => showMenu()); };
-      card.append(solo, online, controls,
-        el("div", "rl-help", "Keyboard: WASD / arrows · Controller: left stick · Phone: joystick"));
+      card.append(dumRow, solo, online, controls,
+        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: double-tap a direction and hold it. " +
+          "Push: F · X / □ on a controller · PUSH on a phone."));
       lobby.append(card);
     }
 
@@ -1026,7 +1157,8 @@ Hub.register({
 
       const mine = me();
       for (const p of order) {
-        if (p === mine) stepLocal(p, dt);
+        if (p === mine) stepBody(p, dt, true);
+        else if (p.dummy) stepBody(p, dt, false);
         animate(p, dt);
       }
       // snipers turn to their target, then back to watching the field
@@ -1061,7 +1193,7 @@ Hub.register({
     }
 
     // for automated testing only: lets a test script read the game's state
-    wrap.rlDebug = { set cam(v) { debugCam = v; }, get phase() { return phase; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
+    wrap.rlDebug = { set cam(v) { debugCam = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
 
     showMenu();
     frame();
