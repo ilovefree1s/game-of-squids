@@ -5,6 +5,8 @@
 // 4. Add one line to index.html in the mini-games section:
 //      <script src="minigames/whack-a-mole/whack-a-mole.js"></script>
 // 5. Put images/sounds for your game in your own folder too.
+// Controls: Input.create(container) gives keyboard + controller + phone controls (see README).
+// Online:   Net.joinRoom(...) gives multiplayer rooms (see README and glass-bridge.js).
 
 Hub.register({
   id: "my-game",            // unique, lowercase, no spaces

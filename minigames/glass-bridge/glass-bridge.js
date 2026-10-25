@@ -1,119 +1,157 @@
-// Glass Bridge (3D) — third-person. Jump left or right across 18 rows of glass.
-// One panel in each row holds; the other shatters and you fall.
+// Glass Bridge (3D) — run and jump across 18 rows of glass panels.
+// In every row one panel is tempered (holds) and one is weak (shatters the moment you land on it).
 //
-// Controls: ← / A = jump to the left panel, → / D = jump to the right panel,
-//           or click a glowing panel / the on-screen buttons.
-// You have 3 players. When one falls, the next hops along the safe path to
-// where they fell, and the other panel in that row is marked safe.
+// SOLO:   3 players, one at a time. When one falls, the next starts from the platform.
+// ONLINE: create a room, share the 4-letter code, up to 8 friends join.
+//         Everyone runs the same bridge at the same time. You can watch each other —
+//         and learn from each other's mistakes. One life each.
 //
-// Scoring: +10 per safe step. Finishing adds +50 per surviving player
-// and +1 per second left on the clock.
+// Controls (shared/input.js):
+//   Keyboard   WASD / arrows to move, Space to jump
+//   Controller left stick / d-pad to move, A / ✕ to jump
+//   Phone      on-screen joystick + JUMP button
 //
-// Needs shared/lib/three.min.js (loaded in index.html before this file).
+// Needs (loaded in index.html): shared/lib/three.min.js, shared/input.js,
+// and for online play shared/lib/supabase.js + shared/config.js + shared/net.js.
 
 Hub.register({
   id: "glass-bridge",
   name: "Glass Bridge",
-  description: "Two panels. One holds. One shatters. (3D)",
+  description: "Run, jump, pray the glass holds. Solo or online. (3D)",
   author: "ilovefree1s",
 
   start(container, api) {
-    if (typeof THREE === "undefined") {
-      container.textContent = "3D library didn't load (shared/lib/three.min.js).";
+    if (typeof THREE === "undefined" || typeof Input === "undefined") {
+      container.textContent = "Missing shared/lib/three.min.js or shared/input.js.";
       return;
     }
 
     // ---------- settings ----------
     const STEPS = 18;
-    const PLAYERS = 3;
-    const TIME = 90; // seconds
-    const ROW_GAP = 2.4; // distance between rows
-    const LANE_X = 1.25; // left/right panel offset
-    const PANEL = 1.5; // panel size
-    const FIRST_Z = -4; // z of row 0
-    const GRAVITY = 22;
-    const NUMBERS = ["023", "148", "311"]; // tracksuit numbers
+    const SOLO_PLAYERS = 3;
+    const TIME = 90; // seconds to cross
+    const COUNTDOWN = 3; // seconds before the clock starts
+    const MAX_ONLINE = 8;
+    const ROW_GAP = 2.4;
+    const LANE_X = 1.25;
+    const PANEL = 1.5;
+    const FIRST_Z = -4;
+    const GRAVITY = 24;
+    const SPEED = 4.2; // run speed
+    const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
+    const SEND_EVERY = 0.1; // online: seconds between position updates
 
     const rowZ = (i) => FIRST_Z - i * ROW_GAP;
     const laneX = (side) => (side === 0 ? -LANE_X : LANE_X); // 0 = left, 1 = right
     const lastZ = rowZ(STEPS - 1);
     const FINISH_Z = lastZ - PANEL / 2 - 1.2 - 2.5; // center of finish platform
+    const START = { x0: -3, x1: 3, z0: -2.3, z1: 1.7 };
+    const FINISH = { x0: -3, x1: 3, z0: FINISH_Z - 2.5, z1: FINISH_Z + 2.5 };
 
-    // safe[i] = which side (0 left, 1 right) holds in row i
-    const safe = Array.from({ length: STEPS }, () => (Math.random() < 0.5 ? 0 : 1));
-
-    let pos = -1; // -1 = start platform; otherwise the row you're standing on
-    let lives = PLAYERS;
-    let timeLeft = TIME;
-    let busy = false; // true while jumping / falling / auto-hopping
+    // ---------- state ----------
+    let mode = "lobby"; // "lobby" | "solo" | "online"
+    let room = null;
+    let safe = [];
+    let order = []; // all players: { id, name, num, mesh, out, finished, best, vel, onGround, target, ... }
+    let soloIdx = 0; // solo: which of the 3 players you're controlling
+    let soloBest = -1;
+    let started = false;
     let done = false;
+    let countdown = 0; // > 0 while counting down
+    let clockLeft = TIME;
     const timeouts = [];
     const later = (fn, ms) => timeouts.push(setTimeout(fn, ms));
 
-    // ---------- HUD styles (removed on cleanup) ----------
+    const randomSafe = () => Array.from({ length: STEPS }, () => (Math.random() < 0.5 ? 0 : 1));
+    const randomNumbers = (n) => {
+      const s = new Set();
+      while (s.size < n) s.add(String(Math.floor(Math.random() * 456) + 1).padStart(3, "0"));
+      return [...s];
+    };
+    const me = () => (mode === "solo" ? order[soloIdx] : order.find((p) => room && p.id === room.id));
+    const isMine = (p) => !!p && p === me();
+    const nameOf = (p) => (isMine(p) && mode === "online" ? "You" : mode === "online" ? p.name : `Player ${p.num}`);
+
+    // ---------- styles (removed on cleanup) ----------
     const style = document.createElement("style");
     style.textContent = `
-      .gb3 { position: relative; width: 100%; user-select: none; }
-      .gb3 canvas { display: block; width: 100%; border-radius: 12px; }
-      .gb3-hud { position: absolute; left: 0; right: 0; top: 0; padding: 14px 16px;
-                 display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
-      .gb3-players { display: flex; gap: 8px; }
-      .gb3-player { width: 36px; height: 36px; border-radius: 50%; background: #1f7a63; color: #fff;
-                    display: grid; place-items: center; font-size: .72rem; font-weight: 700;
-                    border: 2px solid rgba(255,255,255,.7); }
-      .gb3-player.out { background: #2a2a34; color: #666; border-color: #444; text-decoration: line-through; }
-      .gb3-timer { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums;
-                   text-shadow: 0 2px 8px #000; }
+      .gb3 { position: relative; width: 100%; user-select: none; -webkit-user-select: none; }
+      .gb3 canvas { display: block; width: 100%; border-radius: 12px; touch-action: none; }
+      .gb3-hud { position: absolute; left: 0; right: 0; top: 0; padding: 14px 16px; gap: 12px;
+                 display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }
+      .gb3-players { display: flex; flex-wrap: wrap; gap: 6px; max-width: 75%; }
+      .gb3-player { padding: 4px 10px; border-radius: 999px; background: #1f7a63; color: #fff;
+                    font-size: .8rem; font-weight: 700; }
+      .gb3-player.me { box-shadow: 0 0 0 2px var(--accent) inset; }
+      .gb3-player.out { background: #2a2a34; color: #777; text-decoration: line-through; }
+      .gb3-player.finished { background: #2f8f4e; }
+      .gb3-timer { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 2px 8px #000; }
       .gb3-timer.low { color: var(--bad); }
-      .gb3-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px;
-                    display: flex; flex-direction: column; align-items: center; gap: 10px; }
-      .gb3-msg { font-size: 1.05rem; text-shadow: 0 2px 6px #000; text-align: center; }
+      .gb3-msg { position: absolute; left: 0; right: 0; bottom: 16px; padding: 0 170px; pointer-events: none;
+                 font-size: 1.05rem; text-shadow: 0 2px 6px #000; text-align: center; }
       .gb3-msg.bad { color: var(--bad); }
       .gb3-msg.good { color: var(--good); }
-      .gb3-btns { display: flex; gap: 14px; }
-      .gb3-btns button { min-width: 110px; font-weight: 700; opacity: .9; }
-      .gb3-btns button:disabled { opacity: .35; cursor: default; }
+      .gb3-count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+                   font-size: 6rem; font-weight: 900; color: var(--accent); text-shadow: 0 4px 20px #000; }
+      .gb3-lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                   background: rgba(5, 6, 14, .72); z-index: 2; }
+      .gb3-card { background: var(--panel); border-radius: 14px; padding: 22px; width: min(92%, 380px);
+                  display: flex; flex-direction: column; gap: 12px; box-shadow: 0 10px 40px #000; }
+      .gb3-card h2 { margin: 0; color: var(--accent); }
+      .gb3-card label { font-size: .85rem; color: var(--muted); }
+      .gb3-card input { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #444;
+                        background: #14141f; color: var(--text); width: 100%; }
+      .gb3-row { display: flex; gap: 8px; }
+      .gb3-row input { flex: 1; text-transform: uppercase; letter-spacing: .2em; }
+      .gb3-card button.alt { background: #3a3a55; color: var(--text); }
+      .gb3-card button:disabled { opacity: .4; cursor: default; }
+      .gb3-code { font-size: 2.4rem; font-weight: 800; letter-spacing: .3em; text-align: center; color: var(--text); }
+      .gb3-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+      .gb3-list li { background: #14141f; padding: 6px 10px; border-radius: 6px; }
+      .gb3-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
+      .gb3-note.bad { color: var(--bad); }
+      .gb3-help { font-size: .8rem; color: var(--muted); line-height: 1.5; }
+      @media (pointer: coarse) { .gb3-msg { padding: 0 12px; bottom: 170px; } }
+      @media (max-width: 600px) { .gb3-msg { padding: 0 12px; } .gb3-count { font-size: 4rem; } }
     `;
     document.head.appendChild(style);
 
     const el = (tag, cls, text) => {
       const e = document.createElement(tag);
       if (cls) e.className = cls;
-      if (text) e.textContent = text;
+      if (text != null) e.textContent = text;
       return e;
     };
 
+    // ---------- DOM ----------
     const wrap = el("div", "gb3");
     const hud = el("div", "gb3-hud");
     const playersEl = el("div", "gb3-players");
     const timerEl = el("div", "gb3-timer");
     hud.append(playersEl, timerEl);
-    const bottom = el("div", "gb3-bottom");
-    const msg = el("div", "gb3-msg", "← / A to jump left, → / D to jump right. Choose carefully.");
-    const btns = el("div", "gb3-btns");
-    const leftBtn = el("button", "", "◀ Left");
-    const rightBtn = el("button", "", "Right ▶");
-    leftBtn.onclick = () => choose(0);
-    rightBtn.onclick = () => choose(1);
-    btns.append(leftBtn, rightBtn);
-    bottom.append(msg, btns);
+    const msg = el("div", "gb3-msg", "");
+    const countEl = el("div", "gb3-count", "");
+    const lobby = el("div", "gb3-lobby");
 
-    // ---------- three.js setup ----------
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputEncoding = THREE.sRGBEncoding;
-    wrap.append(renderer.domElement, hud, bottom);
+    wrap.append(renderer.domElement, hud, msg, countEl);
     container.append(wrap);
+    const input = Input.create(wrap);
+    wrap.append(lobby); // lobby sits above the phone controls
+    input.showTouch(false);
 
+    // ---------- scene ----------
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x06070f);
     scene.fog = new THREE.Fog(0x06070f, 20, 85);
-
     const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 300);
 
     function resize() {
       const w = wrap.clientWidth || 800;
-      const h = Math.max(320, Math.round(Math.min(w * 0.58, window.innerHeight - 170)));
+      const portrait = window.innerHeight > window.innerWidth; // phones held upright get a tall view
+      const h = Math.max(380, Math.round(portrait ? window.innerHeight - 190 : Math.min(w * 0.6, window.innerHeight - 160)));
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -121,7 +159,6 @@ Hub.register({
     resize();
     window.addEventListener("resize", resize);
 
-    // lights
     scene.add(new THREE.HemisphereLight(0x9aa8ff, 0x0a0a14, 0.6));
     const sun = new THREE.DirectionalLight(0xffffff, 0.9);
     sun.position.set(6, 22, 8);
@@ -133,7 +170,6 @@ Hub.register({
     teal.position.set(7, 7, -36);
     scene.add(teal);
 
-    // materials
     const metal = new THREE.MeshStandardMaterial({ color: 0x2a2f3d, metalness: 0.8, roughness: 0.4 });
     const platformMat = new THREE.MeshStandardMaterial({ color: 0x3b3f58, roughness: 0.8 });
     const finishMat = new THREE.MeshStandardMaterial({ color: 0x2f5a48, roughness: 0.8 });
@@ -142,15 +178,19 @@ Hub.register({
       color: 0xbfefff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.3,
     });
 
-    // platforms
     const startPlat = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 4), platformMat);
     startPlat.position.set(0, -0.25, -0.3);
     scene.add(startPlat);
     const finishPlat = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 5), finishMat);
     finishPlat.position.set(0, -0.25, FINISH_Z);
     scene.add(finishPlat);
+    // low walls behind the start and past the finish
+    for (const z of [START.z1 + 0.1, FINISH.z0 - 0.1]) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 0.2), metal);
+      wall.position.set(0, 0.5, z);
+      scene.add(wall);
+    }
 
-    // steel frame
     const frameLen = Math.abs(FINISH_Z) - 2;
     for (const x of [-LANE_X - PANEL / 2 - 0.06, -LANE_X + PANEL / 2 + 0.06,
                      LANE_X - PANEL / 2 - 0.06, LANE_X + PANEL / 2 + 0.06]) {
@@ -163,8 +203,6 @@ Hub.register({
       cross.position.set(0, -0.12, rowZ(i) + ROW_GAP / 2);
       scene.add(cross);
     }
-
-    // big hall: pillars + a floor far below
     for (let k = 0; k < 7; k++) {
       for (const x of [-16, 16]) {
         const p = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 140, 16), pillarMat);
@@ -176,82 +214,97 @@ Hub.register({
     grid.position.y = -60;
     scene.add(grid);
 
-    // glass panels
     const panelGeo = new THREE.BoxGeometry(PANEL, 0.06, PANEL);
     const edgeGeo = new THREE.EdgesGeometry(panelGeo);
-    const panels = []; // panels[row][side] = { mesh, edges, broken, known, stepped }
+    const panels = [];
     for (let i = 0; i < STEPS; i++) {
       panels.push([0, 1].map((side) => {
         const mat = new THREE.MeshStandardMaterial({
-          color: 0xaee8ff, transparent: true, opacity: 0.28, roughness: 0.05,
+          color: 0xaee8ff, transparent: true, opacity: 0.3, roughness: 0.05,
           metalness: 0.2, depthWrite: false, emissive: 0x000000,
         });
         const mesh = new THREE.Mesh(panelGeo, mat);
         mesh.position.set(laneX(side), 0, rowZ(i));
-        mesh.userData = { row: i, side };
         const edges = new THREE.LineSegments(edgeGeo,
-          new THREE.LineBasicMaterial({ color: 0xbfefff, transparent: true, opacity: 0.45 }));
+          new THREE.LineBasicMaterial({ color: 0xbfefff, transparent: true, opacity: 0.5 }));
         mesh.add(edges);
         scene.add(mesh);
         return { mesh, edges, broken: false, known: false, stepped: false };
       }));
     }
 
-    // ---------- players ----------
-    function numberTexture(text) {
+    // What's under (x, z)? Returns { top, kind, row, side } or null (nothing: you fall).
+    const M = 0.12; // a little forgiveness at the edges
+    function supportAt(x, z) {
+      const inR = (r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
+      if (inR(START)) return { top: 0, kind: "start" };
+      if (inR(FINISH)) return { top: 0, kind: "finish" };
+      const i = Math.round((FIRST_Z - z) / ROW_GAP);
+      if (i < 0 || i >= STEPS || Math.abs(z - rowZ(i)) > PANEL / 2 + M) return null;
+      for (const side of [0, 1]) {
+        if (!panels[i][side].broken && Math.abs(x - laneX(side)) <= PANEL / 2 + M) {
+          return { top: 0.03, kind: "panel", row: i, side };
+        }
+      }
+      return null;
+    }
+
+    // ---------- player models ----------
+    function textTexture(text, w, h, bg, fg, font) {
       const c = document.createElement("canvas");
-      c.width = 128; c.height = 64;
+      c.width = w; c.height = h;
       const g = c.getContext("2d");
-      g.fillStyle = "#f4f4f4"; g.fillRect(0, 0, 128, 64);
-      g.fillStyle = "#111"; g.font = "bold 44px sans-serif";
+      if (bg) { g.fillStyle = bg; g.fillRect(0, 0, w, h); }
+      g.fillStyle = fg; g.font = font;
       g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText(text, 64, 35);
+      if (!bg) { g.shadowColor = "#000"; g.shadowBlur = 8; }
+      g.fillText(text, w / 2, h / 2 + 2);
       const t = new THREE.CanvasTexture(c);
       t.encoding = THREE.sRGBEncoding;
       return t;
     }
 
-    function makePlayer(num) {
+    function makePlayerMesh(num, name, mine) {
       const g = new THREE.Group();
       const suit = new THREE.MeshStandardMaterial({ color: 0x1f7a63, roughness: 0.85 });
-      const stripe = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.8 });
+      const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.8 });
       const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48a, roughness: 0.7 });
       const hair = new THREE.MeshStandardMaterial({ color: 0x1a1410, roughness: 0.9 });
 
-      const legGeo = new THREE.BoxGeometry(0.2, 0.78, 0.24);
+      const legs = [];
       for (const x of [-0.13, 0.13]) {
-        const leg = new THREE.Mesh(legGeo, suit);
-        leg.position.set(x, 0.45, 0);
-        g.add(leg);
-        const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.32), stripe);
-        shoe.position.set(x, 0.05, -0.03);
-        g.add(shoe);
+        const hip = new THREE.Group();
+        hip.position.set(x, 0.84, 0);
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.78, 0.24), suit);
+        leg.position.y = -0.39;
+        const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.32), white);
+        shoe.position.set(0, -0.79, -0.03);
+        hip.add(leg, shoe);
+        g.add(hip);
+        legs.push(hip);
       }
       const torso = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.72, 0.34), suit);
       torso.position.y = 1.18;
       g.add(torso);
-      // white zip stripe on the front
-      const zip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.01), stripe);
+      const zip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.01), white);
       zip.position.set(0, 1.18, -0.175);
       g.add(zip);
-      // number patch on the back (back faces +z; the player looks toward -z)
       const patch = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.2),
-        new THREE.MeshBasicMaterial({ map: numberTexture(num) }));
+        new THREE.MeshBasicMaterial({ map: textTexture(num, 128, 64, "#f4f4f4", "#111", "bold 44px sans-serif") }));
       patch.position.set(0, 1.3, 0.172);
       g.add(patch);
 
       const arms = [];
       for (const x of [-0.37, 0.37]) {
-        const pivot = new THREE.Group();
-        pivot.position.set(x, 1.5, 0);
+        const shoulder = new THREE.Group();
+        shoulder.position.set(x, 1.5, 0);
         const arm = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.66, 0.18), suit);
         arm.position.y = -0.32;
-        pivot.add(arm);
         const hand = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 8), skin);
         hand.position.y = -0.68;
-        pivot.add(hand);
-        g.add(pivot);
-        arms.push(pivot);
+        shoulder.add(arm, hand);
+        g.add(shoulder);
+        arms.push(shoulder);
       }
       const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 18, 14), skin);
       head.position.y = 1.76;
@@ -261,42 +314,49 @@ Hub.register({
       hairCap.position.y = 1.78;
       g.add(hairCap);
 
-      g.userData.arms = arms;
+      if (name) {
+        const tag = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: textTexture(name, 256, 64, null, mine ? "#ffcc33" : "#ffffff", "bold 34px sans-serif"),
+          depthTest: false, transparent: true,
+        }));
+        tag.scale.set(1.4, 0.35, 1);
+        tag.position.y = 2.3;
+        g.add(tag);
+      }
+
+      g.userData = { legs, arms };
       scene.add(g);
       return g;
     }
 
-    const FRONT = new THREE.Vector3(0, 0, -1.6); // where the active player waits
-    const waitSpots = [FRONT, new THREE.Vector3(-1.5, 0, 0.6), new THREE.Vector3(1.5, 0, 0.6)];
-    const players = NUMBERS.map((n, k) => {
-      const p = makePlayer(n);
-      p.position.copy(waitSpots[k]);
-      return p;
-    });
-    const active = () => players[Math.min(PLAYERS - lives, PLAYERS - 1)];
+    const lerpAngle = (a, b, t) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * Math.min(1, t);
 
-    const panelTop = (row, side) => new THREE.Vector3(laneX(side), 0.03, rowZ(row));
-
-    // ---------- animation state ----------
-    let tween = null; // current jump
-    let faller = null; // player currently falling
-    const shards = [];
-
-    function jumpTo(target, dur, height, onDone) {
-      tween = { obj: active(), from: active().position.clone(), to: target.clone(), t: 0, dur, height, onDone };
+    function animate(p, speed, inAir, dt) {
+      const { legs, arms } = p.mesh.userData;
+      if (p.out) {
+        arms.forEach((a) => (a.rotation.x = -2.6 + Math.sin(time * 20) * 0.4));
+        legs.forEach((l, i) => (l.rotation.x = Math.sin(time * 18 + i * 3) * 0.6));
+        p.mesh.rotation.x += 3 * dt;
+        return;
+      }
+      if (inAir) {
+        legs[0].rotation.x = 0.6; legs[1].rotation.x = -0.4;
+        arms.forEach((a) => (a.rotation.x = -2.3));
+        return;
+      }
+      p.phase += dt * speed * 3.2;
+      const swing = Math.min(1, speed / 4) * 0.8;
+      legs[0].rotation.x = Math.sin(p.phase) * swing;
+      legs[1].rotation.x = -Math.sin(p.phase) * swing;
+      arms[0].rotation.x = -Math.sin(p.phase) * swing * 0.9;
+      arms[1].rotation.x = Math.sin(p.phase) * swing * 0.9;
     }
 
-    function hopChain(targets, onDone) {
-      if (!targets.length) return onDone();
-      jumpTo(targets[0], 0.32, 0.6, () => hopChain(targets.slice(1), onDone));
-    }
-
-    // ---------- sound (synthesized, no files needed) ----------
+    // ---------- sound ----------
     let actx = null;
     function audio() {
-      if (!actx) {
-        try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { actx = null; }
-      }
+      if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { actx = null; } }
+      if (actx && actx.state === "suspended") actx.resume();
       return actx;
     }
     function shatterSound() {
@@ -311,217 +371,488 @@ Hub.register({
       src.connect(f).connect(gain).connect(a.destination);
       src.start();
     }
-    function tone(freq, dur = 0.25, vol = 0.15) {
+    function tone(freq, dur = 0.25, vol = 0.15, type = "sine") {
       const a = audio(); if (!a) return;
-      const o = a.createOscillator(); o.type = "sine"; o.frequency.value = freq;
+      const o = a.createOscillator(); o.type = type; o.frequency.value = freq;
       const gain = a.createGain();
       gain.gain.setValueAtTime(vol, a.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
       o.connect(gain).connect(a.destination);
       o.start(); o.stop(a.currentTime + dur);
     }
+    ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, audio, { passive: true }));
 
     // ---------- HUD ----------
     function renderPlayers() {
       playersEl.innerHTML = "";
-      NUMBERS.forEach((n, k) => {
-        const out = k < PLAYERS - lives;
-        playersEl.append(el("div", "gb3-player" + (out ? " out" : ""), n));
+      order.forEach((p) => {
+        let cls = "gb3-player";
+        if (p.out) cls += " out";
+        else if (p.finished) cls += " finished";
+        if (mode === "online" && isMine(p)) cls += " me";
+        const label = mode === "online" ? `${p.num} ${p.name}` : p.num;
+        playersEl.append(el("div", cls, p.finished ? "✓ " + label : label));
       });
     }
+    let lastShown = null;
     function renderTimer() {
-      timerEl.textContent = `⏱ ${timeLeft}`;
-      timerEl.classList.toggle("low", timeLeft <= 15);
+      const s = started ? Math.max(0, Math.ceil(clockLeft)) : "";
+      if (s === lastShown) return;
+      lastShown = s;
+      timerEl.textContent = started ? `⏱ ${s}` : "";
+      timerEl.classList.toggle("low", started && clockLeft <= 15);
     }
     function say(text, kind = "") {
       msg.textContent = text;
       msg.className = "gb3-msg" + (kind ? " " + kind : "");
     }
-    function updateButtons() {
-      const off = busy || done || pos + 1 >= STEPS;
-      leftBtn.disabled = off || (!off && panels[pos + 1][0].broken);
-      rightBtn.disabled = off || (!off && panels[pos + 1][1].broken);
+
+    // ---------- match ----------
+    const spawnSpot = (k) => new THREE.Vector3(-2.1 + (k % 4) * 1.4, 0, -1.4 + Math.floor(k / 4) * 1.3);
+
+    function addPlayer(r, k) {
+      const mine = mode === "online" && room && r.id === room.id;
+      const p = {
+        ...r,
+        out: false, finished: false, best: -1,
+        vel: new THREE.Vector3(), onGround: true, phase: 0,
+        target: null, targetRy: 0, lastSent: null, sendT: 0,
+        mesh: makePlayerMesh(r.num, mode === "online" ? r.name : null, mine),
+      };
+      p.mesh.position.copy(spawnSpot(k));
+      return p;
     }
 
-    // ---------- game logic ----------
-    function choose(side) {
-      const row = pos + 1;
-      if (busy || done || row >= STEPS) return;
-      if (panels[row][side].broken) return;
-      audio(); // unlock sound on first input
-      busy = true;
-      updateButtons();
-      jumpTo(panelTop(row, side), 0.55, 1.1, () => land(row, side));
+    // roster: [{ id, name, num }]
+    function startMatch(safeArr, roster) {
+      safe = safeArr;
+      order = roster.map(addPlayer);
+      if (mode === "solo") {
+        // the active solo player stands at the front; the others wait off to the sides
+        order.forEach((p, k) => p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.5 : 2.5, 0, k === 0 ? -1.4 : 1.2));
+      }
+      started = true;
+      lobby.hidden = true;
+      countdown = COUNTDOWN;
+      clockLeft = TIME;
+      input.showTouch(true);
+      input.clearJump();
+      const touch = navigator.maxTouchPoints > 0;
+      say(touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too",
+        "");
+      renderPlayers();
+      renderTimer();
     }
 
-    function land(row, side) {
-      if (done) return;
-      const p = panels[row][side];
-      if (side === safe[row]) {
-        p.stepped = true;
-        p.mesh.material.color.set(0x8affc1);
-        p.mesh.material.emissive.set(0x0b3a22);
-        p.edges.material.color.set(0x3ddc84);
-        pos = row;
-        api.addScore(10);
-        tone(660 + row * 25);
-        if (pos === STEPS - 1) {
-          say("Last panel… run!", "good");
-          jumpTo(new THREE.Vector3(0, 0.03, FINISH_Z + 1), 0.6, 1.2, win);
-          return;
+    function onLand(p, sup) {
+      if (sup.kind === "finish") return finish(p);
+      if (sup.kind !== "panel") return;
+      const { row, side } = sup;
+      if (safe[row] === side) {
+        markStepped(row, side);
+        if (mode === "online") room.send({ t: "step", row, side });
+        if (row > p.best) {
+          p.best = row;
+          if (mode === "online" || row > soloBest) {
+            soloBest = Math.max(soloBest, row);
+            api.addScore(10);
+          }
+          tone(560 + row * 25, 0.2, 0.12);
         }
-        say(`Row ${pos + 1} of ${STEPS}. It holds.`, "good");
-        busy = false;
-        updateButtons();
       } else {
-        shatter(p);
-        const other = panels[row][1 - side];
-        other.known = true;
-        other.edges.material.color.set(0x3ddc84);
-        faller = { obj: active(), vy: 2, spinX: 2 + Math.random() * 2, spinZ: (Math.random() - 0.5) * 3 };
-        lives--;
-        renderPlayers();
-        if (lives === 0) {
-          say("Everyone fell. The bridge wins.", "bad");
-          return endGame(1800);
-        }
-        say(`Player ${NUMBERS[PLAYERS - lives - 1]} fell…`, "bad");
-        later(nextPlayer, 1800);
+        breakPanel(row, side);
+        if (mode === "online") room.send({ t: "break", row, side });
       }
     }
 
-    function shatter(p) {
-      p.broken = true;
-      p.mesh.visible = false;
+    function markStepped(row, side) {
+      const panel = panels[row][side];
+      if (panel.stepped || panel.broken) return;
+      panel.stepped = true;
+      panel.mesh.material.color.set(0x8affc1);
+      panel.mesh.material.emissive.set(0x0b3a22);
+      panel.edges.material.color.set(0x3ddc84);
+    }
+
+    function breakPanel(row, side) {
+      const panel = panels[row][side];
+      if (panel.broken) return;
+      panel.broken = true;
+      panel.mesh.visible = false;
       shatterSound();
       const n = 5, size = PANEL / n;
       for (let a = 0; a < n; a++) {
         for (let b = 0; b < n; b++) {
           const s = new THREE.Mesh(new THREE.BoxGeometry(size * 0.9, 0.05, size * 0.9), shardMat);
-          s.position.set(
-            p.mesh.position.x - PANEL / 2 + size * (a + 0.5),
-            0,
-            p.mesh.position.z - PANEL / 2 + size * (b + 0.5));
+          s.position.set(panel.mesh.position.x - PANEL / 2 + size * (a + 0.5), 0,
+                         panel.mesh.position.z - PANEL / 2 + size * (b + 0.5));
           s.userData.v = new THREE.Vector3((Math.random() - 0.5) * 3, Math.random() * 2.5, (Math.random() - 0.5) * 3);
           s.userData.spin = new THREE.Vector3(Math.random() * 8, Math.random() * 8, Math.random() * 8);
           scene.add(s);
           shards.push(s);
         }
       }
+      // now everyone knows the other panel in this row is safe
+      const other = panels[row][1 - side];
+      if (!other.stepped) { other.known = true; other.edges.material.color.set(0x3ddc84); }
     }
 
-    function nextPlayer() {
-      if (done) return;
-      const p = active();
-      p.position.copy(FRONT);
-      say(`Player ${NUMBERS[PLAYERS - lives]} steps up and follows the safe path…`);
-      // hop along every panel the previous players proved safe
-      const path = [];
-      for (let r = 0; r <= pos; r++) path.push(panelTop(r, safe[r]));
-      later(() => hopChain(path, () => {
-        if (done) return;
-        busy = false;
-        say("Your turn. Left or right?");
-        updateButtons();
-      }), 400);
-    }
-
-    function win() {
-      if (done) return;
-      done = true;
-      clearInterval(clock);
-      api.addScore(lives * 50 + timeLeft);
-      say(`You made it across with ${lives} player${lives === 1 ? "" : "s"} left!`, "good");
-      [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
-      endGame(1800);
-    }
-
-    function endGame(delay) {
-      done = true;
-      clearInterval(clock);
-      updateButtons();
-      later(api.gameOver, delay);
-    }
-
-    // ---------- input ----------
-    function onKey(e) {
-      const k = e.key.toLowerCase();
-      let side = null;
-      if (k === "arrowleft" || k === "a") side = 0;
-      if (k === "arrowright" || k === "d") side = 1;
-      if (side === null) return;
-      e.preventDefault();
-      choose(side);
-    }
-    document.addEventListener("keydown", onKey);
-
-    // click a panel in the next row
-    const ray = new THREE.Raycaster();
-    const ndc = new THREE.Vector2();
-    function onPointer(e) {
-      if (pos + 1 >= STEPS) return;
-      const r = renderer.domElement.getBoundingClientRect();
-      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-      ray.setFromCamera(ndc, camera);
-      const targets = panels[pos + 1].filter((p) => !p.broken).map((p) => p.mesh);
-      const hit = ray.intersectObjects(targets, false)[0];
-      if (hit) choose(hit.object.userData.side);
-    }
-    renderer.domElement.addEventListener("pointerdown", onPointer);
-
-    // ---------- timer ----------
-    const clock = setInterval(() => {
-      if (done) return;
-      timeLeft--;
-      renderTimer();
-      if (timeLeft <= 0) {
-        say("Time's up. The bridge collapses.", "bad");
-        for (const row of panels) for (const p of row) if (!p.broken) shatter(p);
-        if (!faller) faller = { obj: active(), vy: 1, spinX: 2, spinZ: 1 };
-        endGame(2000);
+    function eliminate(p) {
+      if (p.out || done) return;
+      p.out = true;
+      renderPlayers();
+      tone(180, 0.6, 0.12, "sawtooth");
+      say(`${nameOf(p)} fell!`, "bad");
+      if (mode === "online") {
+        if (isMine(p)) room.send({ t: "fell" });
+        return checkAllDone();
       }
-    }, 1000);
+      // solo: next player steps up
+      later(() => {
+        const next = order.findIndex((q) => !q.out && !q.finished);
+        if (next < 0) return endMatch();
+        soloIdx = next;
+        const q = me();
+        q.mesh.position.set(0, 0, -1.4);
+        q.vel.set(0, 0, 0);
+        input.clearJump();
+        say(`Player ${q.num}, your turn. The green-outlined panels are safe.`);
+        renderPlayers();
+      }, 1500);
+    }
+
+    function finish(p) {
+      if (p.finished || p.out) return;
+      p.finished = true;
+      renderPlayers();
+      say(`${nameOf(p)} made it across!`, "good");
+      if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
+      if (mode === "online") {
+        if (isMine(p)) room.send({ t: "finish" });
+        return checkAllDone();
+      }
+      endMatch();
+    }
+
+    function checkAllDone() {
+      if (order.length && order.every((p) => p.out || p.finished)) later(endMatch, 1500);
+    }
+
+    function timeUp() {
+      say("Time's up. The bridge collapses!", "bad");
+      for (let r = 0; r < STEPS; r++) for (const s of [0, 1]) breakPanel(r, s);
+      later(() => {
+        order.forEach((p) => { if (!p.finished) p.out = true; });
+        endMatch();
+      }, 2000);
+    }
+
+    function endMatch() {
+      if (done) return;
+      done = true;
+      renderPlayers();
+      const survivors = order.filter((p) => p.finished);
+      if (mode === "solo") {
+        const left = order.filter((p) => !p.out).length;
+        if (survivors.length) {
+          api.addScore(left * 50 + Math.max(0, Math.ceil(clockLeft)));
+          say(`You made it across with ${left} player${left === 1 ? "" : "s"} left!`, "good");
+        } else say("Everyone fell. The bridge wins.", "bad");
+      } else {
+        const iSurvived = survivors.some(isMine);
+        if (iSurvived) api.addScore(100);
+        say(survivors.length ? `Survivors: ${survivors.map((p) => p.name).join(", ")}` : "Nobody survived. The bridge wins.",
+          iSurvived ? "good" : "bad");
+      }
+      input.showTouch(false);
+      later(api.gameOver, 3000);
+    }
+
+    // ---------- physics ----------
+    const shards = [];
+    let time = 0;
+
+    function stepLocal(p, dt) {
+      const live = !p.out && countdown <= 0 && !done;
+      const mv = live ? input.move() : { x: 0, y: 0 };
+      const wantJump = input.jump() && live;
+      const P = p.mesh.position;
+
+      if (wantJump && p.onGround) {
+        p.vel.y = JUMP_V;
+        p.onGround = false;
+        tone(300, 0.08, 0.05, "triangle");
+      }
+
+      // small fixed steps so landings work the same on fast and slow devices
+      const n = Math.max(1, Math.ceil(dt * 120));
+      const h = dt / n;
+      for (let s = 0; s < n; s++) {
+        const k = Math.min(1, (p.onGround ? 14 : 8) * h); // less control in the air
+        p.vel.x += (mv.x * SPEED - p.vel.x) * k;
+        p.vel.z += (-mv.y * SPEED - p.vel.z) * k;
+        p.vel.y -= GRAVITY * h;
+
+        const prevY = P.y;
+        P.addScaledVector(p.vel, h);
+        // walls behind the start and past the finish
+        if (P.z > START.z1 - 0.15 && P.y > -1) { P.z = START.z1 - 0.15; p.vel.z = Math.min(0, p.vel.z); }
+        if (P.z < FINISH.z0 + 0.15 && P.y > -1) { P.z = FINISH.z0 + 0.15; p.vel.z = Math.max(0, p.vel.z); }
+
+        const sup = p.out ? null : supportAt(P.x, P.z);
+        const wasGround = p.onGround;
+        if (sup && p.vel.y <= 0 && prevY >= sup.top - 0.05 && P.y <= sup.top) {
+          P.y = sup.top;
+          p.vel.y = 0;
+          p.onGround = true;
+          if (!wasGround) {
+            p.vel.x *= 0.35; // "sticky" landings so you don't slide off a small panel
+            p.vel.z *= 0.35;
+            onLand(p, sup);
+          }
+        } else {
+          p.onGround = false;
+        }
+      }
+
+      const speed = Math.hypot(p.vel.x, p.vel.z);
+      if (speed > 0.3 && !p.out) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, Math.atan2(-p.vel.x, -p.vel.z), dt * 12);
+      animate(p, speed, !p.onGround, dt);
+
+      if (!p.out && P.y < -4) eliminate(p);
+      if (P.y < -55) p.mesh.visible = false;
+
+      // online: tell everyone where we are
+      if (mode === "online" && p.mesh.visible) {
+        p.sendT += dt;
+        const moved = !p.lastSent || P.distanceTo(p.lastSent) > 0.01;
+        if (p.sendT >= SEND_EVERY && (moved || p.sendT > 0.5)) {
+          p.sendT = 0;
+          p.lastSent = P.clone();
+          const r2 = (v) => Math.round(v * 100) / 100;
+          room.send({ t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
+        }
+      }
+    }
+
+    function stepRemote(p, dt) {
+      if (!p.target) { animate(p, 0, false, dt); return; }
+      const P = p.mesh.position;
+      const before = P.clone();
+      P.lerp(p.target, Math.min(1, dt * 12));
+      if (!p.out) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, p.targetRy, dt * 12);
+      const speed = Math.hypot(P.x - before.x, P.z - before.z) / Math.max(dt, 0.001);
+      animate(p, speed, p.target.y > 0.08, dt);
+    }
+
+    // solo: the players waiting their turn just stand there
+    function stepIdle(p, dt) { animate(p, 0, false, dt); }
+
+    // ---------- online messages ----------
+    function onRoomMessage(data, from) {
+      if (data.t === "start") {
+        if (started) return;
+        if (!data.roster.some((r) => r.id === room.id)) return showRoom("The game started without you (room full).", true);
+        room.update({ inGame: true });
+        return startMatch(data.safe, data.roster);
+      }
+      if (!started) return;
+      const p = order.find((q) => q.id === from);
+      if (!p) return;
+      if (data.t === "pos") {
+        if (!p.target) p.target = new THREE.Vector3();
+        p.target.set(data.x, data.y, data.z);
+        p.targetRy = data.ry;
+      } else if (data.t === "step") markStepped(data.row, data.side);
+      else if (data.t === "break") breakPanel(data.row, data.side);
+      else if (data.t === "fell") eliminate(p);
+      else if (data.t === "finish") finish(p);
+    }
+
+    function onRoomPlayers(list) {
+      if (!started) return renderRoom(list);
+      const here = new Set(list.map((p) => p.id));
+      order.forEach((p) => {
+        if (!p.out && !p.finished && !here.has(p.id)) {
+          p.mesh.visible = false;
+          say(`${p.name} left the game.`, "bad");
+          p.out = true;
+          renderPlayers();
+          checkAllDone();
+        }
+      });
+    }
+
+    // ---------- lobby screens ----------
+    let roomPlayers = [];
+    let roomNote = "";
+    let roomNoteBad = false;
+    const savedName = (() => { try { return localStorage.getItem("gos:name") || ""; } catch { return ""; } })();
+    const lastCode = (() => { try { return localStorage.getItem("gos:lastRoom") || ""; } catch { return ""; } })();
+
+    function makeInput(value, placeholder, max) {
+      const i = el("input");
+      i.value = value; i.placeholder = placeholder; i.maxLength = max;
+      i.addEventListener("keydown", (e) => e.stopPropagation()); // typing shouldn't move anyone
+      return i;
+    }
+
+    function showMenu() {
+      lobby.innerHTML = "";
+      lobby.hidden = false;
+      const card = el("div", "gb3-card");
+      card.append(el("h2", "", "Glass Bridge"));
+      card.append(el("label", "", "Your name"));
+      const nameIn = makeInput(savedName, "e.g. Sam", 14);
+      card.append(nameIn);
+
+      const solo = el("button", "", "Play solo");
+      solo.onclick = () => {
+        mode = "solo";
+        const nums = randomNumbers(SOLO_PLAYERS);
+        startMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num })));
+      };
+      const create = el("button", "", "Create online room");
+      const codeRow = el("div", "gb3-row");
+      const codeIn = makeInput(lastCode, "CODE", 4);
+      const join = el("button", "alt", "Join");
+      codeRow.append(codeIn, join);
+      const note = el("div", "gb3-note bad");
+
+      const getName = () => {
+        const n = nameIn.value.trim().slice(0, 14);
+        if (!n) { note.textContent = "Type a name first."; nameIn.focus(); return null; }
+        try { localStorage.setItem("gos:name", n); } catch {}
+        return n;
+      };
+      create.onclick = () => { const n = getName(); if (n) enterRoom(Net.newCode(), n); };
+      join.onclick = () => {
+        const n = getName(); if (!n) return;
+        const code = codeIn.value.trim().toUpperCase();
+        if (!/^[A-Z]{4}$/.test(code)) { note.textContent = "Room codes are 4 letters."; return; }
+        enterRoom(code, n);
+      };
+      card.append(solo, el("label", "", "Play online with friends"), create, codeRow, note,
+        el("div", "gb3-help", "Keyboard: WASD / arrows + Space · Controller: stick + A/✕ · Phone: on-screen joystick + JUMP"));
+      lobby.append(card);
+      if (typeof Net === "undefined" || typeof supabase === "undefined") {
+        create.disabled = join.disabled = true;
+        note.textContent = "Online play unavailable (Supabase library didn't load).";
+      }
+    }
+
+    function enterRoom(code, name) {
+      mode = "online";
+      try { localStorage.setItem("gos:lastRoom", code); } catch {}
+      roomPlayers = [];
+      roomNote = "Connecting…";
+      roomNoteBad = false;
+      try {
+        room = Net.joinRoom("glass-bridge", code, name, {
+          onPlayers: onRoomPlayers,
+          onMessage: onRoomMessage,
+          onStatus: (s) => {
+            if (started) return;
+            if (s === "SUBSCRIBED") showRoom("Connected.");
+            else if (s === "CHANNEL_ERROR" || s === "TIMED_OUT") {
+              showRoom("Couldn't connect to the online server. Check your internet, or Realtime settings in Supabase.", true);
+            }
+          },
+        });
+      } catch (err) {
+        return showRoom("Online play failed to start: " + err.message, true);
+      }
+      renderRoom([]);
+    }
+
+    function showRoom(note, bad = false) {
+      roomNote = note;
+      roomNoteBad = bad;
+      renderRoom(roomPlayers);
+    }
+
+    function renderRoom(list) {
+      if (started) return;
+      roomPlayers = list;
+      lobby.innerHTML = "";
+      lobby.hidden = false;
+      const card = el("div", "gb3-card");
+      card.append(el("label", "", "Room code: tell your friends"), el("div", "gb3-code", room ? room.code : ""));
+      const inGame = list.some((p) => p.inGame);
+      const ul = el("ul", "gb3-list");
+      list.slice(0, MAX_ONLINE).forEach((p, i) => {
+        const mine = room && p.id === room.id;
+        ul.append(el("li", "", `${p.name}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}`));
+      });
+      card.append(el("label", "", `Players (${Math.min(list.length, MAX_ONLINE)}/${MAX_ONLINE})`), ul);
+
+      const myIndex = list.findIndex((p) => room && p.id === room.id);
+      const iAmHost = myIndex === 0;
+      let note = roomNote, bad = roomNoteBad;
+      if (inGame) { note = "A game is already running in this room. Try another code."; bad = true; }
+      else if (myIndex >= MAX_ONLINE) { note = "Room is full (8 players)."; bad = true; }
+      else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
+
+      if (iAmHost && !inGame) {
+        const n = Math.min(list.length, MAX_ONLINE);
+        const startBtn = el("button", "", n > 1 ? `Start (${n} players)` : "Start (just you)");
+        startBtn.onclick = () => {
+          const roster = list.slice(0, MAX_ONLINE);
+          const nums = randomNumbers(roster.length);
+          const data = { t: "start", safe: randomSafe(), roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i] })) };
+          room.send(data);
+          room.update({ inGame: true });
+          startMatch(data.safe, data.roster);
+        };
+        card.append(startBtn);
+      }
+      const leave = el("button", "alt", "Leave room");
+      leave.onclick = () => { if (room) room.leave(); room = null; mode = "lobby"; showMenu(); };
+      card.append(el("div", "gb3-note" + (bad ? " bad" : ""), note), leave);
+      lobby.append(card);
+    }
 
     // ---------- main loop ----------
-    const camPos = new THREE.Vector3();
-    const camLook = new THREE.Vector3();
-    const tmp = new THREE.Vector3();
+    const camPos = new THREE.Vector3(0, 3.6, 4.4);
+    const camLook = new THREE.Vector3(0, 0.6, -6.6);
     let followY = 0;
-    let time = 0;
+
+    function cameraTarget() {
+      const m = me();
+      if (!m) return null;
+      if (mode === "online" && m.out && m.mesh.position.y < -20) {
+        // you fell: watch whoever is still running
+        return order.find((p) => !p.out && !p.finished) || m;
+      }
+      return m;
+    }
 
     function update(dt) {
       time += dt;
 
-      // jump
-      if (tween) {
-        tween.t = Math.min(1, tween.t + dt / tween.dur);
-        const t = tween.t;
-        tween.obj.position.lerpVectors(tween.from, tween.to, t);
-        tween.obj.position.y += tween.height * 4 * t * (1 - t);
-        const swing = Math.sin(Math.PI * t) * 2.2;
-        tween.obj.userData.arms.forEach((a) => (a.rotation.x = -swing));
-        if (t >= 1) {
-          tween.obj.userData.arms.forEach((a) => (a.rotation.x = 0));
-          const cb = tween.onDone;
-          tween = null;
-          if (cb) cb();
+      if (started && !done) {
+        if (countdown > 0) {
+          const before = Math.ceil(countdown);
+          countdown -= dt;
+          const now = Math.ceil(countdown);
+          countEl.textContent = countdown > 0 ? String(now) : "GO!";
+          if (now !== before) tone(countdown > 0 ? 440 : 880, 0.2, 0.12);
+          if (countdown <= 0) later(() => (countEl.textContent = ""), 700);
+        } else {
+          clockLeft -= dt;
+          if (clockLeft <= 0) { clockLeft = 0; timeUpOnce(); }
         }
       }
+      renderTimer();
 
-      // falling player
-      if (faller) {
-        faller.vy -= GRAVITY * dt;
-        faller.obj.position.y += faller.vy * dt;
-        faller.obj.rotation.x += faller.spinX * dt;
-        faller.obj.rotation.z += faller.spinZ * dt;
-        faller.obj.userData.arms.forEach((a) => (a.rotation.x = -2.6 + Math.sin(time * 20) * 0.4));
-        if (faller.obj.position.y < -55) {
-          faller.obj.visible = false;
-          faller = null;
-        }
+      const mine = me();
+      for (const p of order) {
+        if (p === mine) stepLocal(p, dt);
+        else if (mode === "online") stepRemote(p, dt);
+        else if (p.out) { /* solo: fallen players keep falling */ p.vel.y -= GRAVITY * dt; p.mesh.position.addScaledVector(p.vel, dt); animate(p, 0, true, dt); if (p.mesh.position.y < -55) p.mesh.visible = false; }
+        else stepIdle(p, dt);
       }
 
-      // shards
       for (let i = shards.length - 1; i >= 0; i--) {
         const s = shards[i];
         s.userData.v.y -= GRAVITY * dt;
@@ -536,32 +867,27 @@ Hub.register({
         }
       }
 
-      // glow the two panels you can jump to next
-      const pulse = 0.55 + 0.4 * Math.sin(time * 5);
-      panels.forEach((row, i) => row.forEach((p) => {
-        if (p.broken || p.stepped) return;
-        const isNext = !busy && !done && i === pos + 1;
-        p.edges.material.opacity = isNext ? pulse : p.known ? 0.9 : 0.4;
-        p.mesh.material.opacity = isNext ? 0.38 : 0.26;
+      // known-safe panels glow
+      const pulse = 0.6 + 0.35 * Math.sin(time * 4);
+      panels.forEach((row) => row.forEach((p) => {
+        if (p.known && !p.stepped && !p.broken) p.edges.material.opacity = pulse;
       }));
 
-      // third-person camera: behind and above the active player
-      const target = (faller && faller.obj) || active();
-      tmp.copy(target.position);
-      if (!faller) followY += (tmp.y - followY) * Math.min(1, dt * 4);
-      const camGoal = new THREE.Vector3(tmp.x * 0.6, followY + 3.4, tmp.z + 5.8);
-      camPos.lerp(camGoal, Math.min(1, dt * 3.5));
-      const lookGoal = faller
-        ? faller.obj.position
-        : new THREE.Vector3(tmp.x * 0.5, followY + 0.6, tmp.z - 5);
-      camLook.lerp(lookGoal, Math.min(1, dt * (faller ? 2 : 4)));
+      // third-person camera
+      const t = cameraTarget();
+      const focus = t ? t.mesh.position : new THREE.Vector3(0, 0, -1.4);
+      const falling = t && t.out;
+      if (!falling) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
+      const camGoal = new THREE.Vector3(focus.x * 0.6, followY + 3.6, (falling ? camPos.z : focus.z + 5.8));
+      camPos.lerp(camGoal, Math.min(1, dt * 4));
+      const lookGoal = falling ? focus : new THREE.Vector3(focus.x * 0.5, followY + 0.6, focus.z - 5);
+      camLook.lerp(lookGoal, Math.min(1, dt * (falling ? 2.5 : 5)));
       camera.position.copy(camPos);
       camera.lookAt(camLook);
     }
 
-    // start the camera in place (no swoop on load)
-    camPos.set(0, 3.4, FRONT.z + 5.8);
-    camLook.set(0, 0.6, FRONT.z - 5);
+    let timeUpFired = false;
+    function timeUpOnce() { if (!timeUpFired) { timeUpFired = true; timeUp(); } }
 
     const frameClock = new THREE.Clock();
     let raf = 0;
@@ -571,18 +897,16 @@ Hub.register({
       renderer.render(scene, camera);
     }
 
-    renderPlayers();
-    renderTimer();
-    updateButtons();
+    showMenu();
     frame();
 
     // ---------- cleanup when leaving the game ----------
     return () => {
       cancelAnimationFrame(raf);
-      clearInterval(clock);
       timeouts.forEach(clearTimeout);
-      document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", resize);
+      input.destroy();
+      if (room) room.leave();
       scene.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
