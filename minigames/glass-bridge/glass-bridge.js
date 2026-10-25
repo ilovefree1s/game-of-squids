@@ -15,7 +15,7 @@
 // FIRST PLAYER ACROSS WINS. PUSH shoves whoever is in front of you.
 //
 // Controls (shared/input.js):
-//   Keyboard   WASD / arrows to move, Space to jump, F to push
+//   Keyboard   WASD / arrows to move, Space to jump  (F = push, currently turned off: PUSH_ENABLED)
 //   Controller left stick / d-pad to move, A / ✕ to jump, X / □ to push
 //   Phone      on-screen joystick + JUMP + PUSH buttons (movable / resizable)
 //
@@ -27,6 +27,13 @@ Hub.register({
   name: "Glass Bridge",
   description: "Run, jump, pray the glass holds. Solo or online. (3D)",
   author: "ilovefree1s",
+  color: "#5ad1ff",
+  // home-screen picture: two rows of glass panels running into the distance
+  art: `<svg viewBox="0 0 120 70"><g fill="rgba(90,209,255,.18)" stroke="#5ad1ff" stroke-width="2">
+    <path d="M14 66 L38 66 L44 46 L26 46 Z"/><path d="M82 66 L106 66 L94 46 L76 46 Z"/>
+    <path d="M30 40 L45 40 L49 27 L37 27 Z"/><path d="M75 40 L90 40 L83 27 L71 27 Z"/>
+    <path d="M40 22 L50 22 L52 13 L44 13 Z"/><path d="M70 22 L80 22 L76 13 L68 13 Z"/>
+    <path d="M47 9 L53 9 L54 4 L49 4 Z"/><path d="M67 9 L73 9 L71 4 L66 4 Z"/></g></svg>`,
 
   start(container, api) {
     if (typeof THREE === "undefined" || typeof Input === "undefined") {
@@ -48,6 +55,8 @@ Hub.register({
     const SPEED = 4.2; // run speed
     const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
     const SEND_EVERY = 0.1; // online: seconds between position updates
+    const PUSH_ENABLED = false; // the PUSH button is turned off for now (set true to bring it back)
+    const BLOCK_SHOVE = PANEL * 0.5; // jump into someone standing on a tile: they slide back half a tile
     const PUSH_RANGE = 1.5; // how far a push reaches
     const PUSH_FORCE = 9; // how hard a push shoves
     const PUSH_COOLDOWN = 0.7; // seconds between pushes
@@ -185,7 +194,7 @@ Hub.register({
     renderer.outputEncoding = THREE.sRGBEncoding;
     wrap.append(renderer.domElement, hud, msg, countEl);
     container.append(wrap);
-    const input = Input.create(wrap);
+    const input = Input.create(wrap, { push: PUSH_ENABLED });
     wrap.append(lobby); // lobby sits above the phone controls
     input.showTouch(false);
 
@@ -602,7 +611,7 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove." : "WASD / arrows to move · Space to jump · F to push · controllers work too") +
+      say((touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -870,7 +879,7 @@ Hub.register({
       const live = !p.out && countdown <= 0 && !done;
       const mv = live ? input.move() : { x: 0, y: 0 };
       const wantJump = input.jump() && live;
-      if (input.push() && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
+      if (input.push() && PUSH_ENABLED && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
 
       if (wantJump && p.onGround) {
@@ -891,6 +900,12 @@ Hub.register({
 
         const prevY = P.y;
         P.addScaledVector(p.vel, h);
+        if (p.slide && p.slide.t > 0) { // being shoved by someone who jumped into you
+          const k = Math.min(h, p.slide.t);
+          P.x += p.slide.x * k;
+          P.z += p.slide.z * k;
+          p.slide.t -= k;
+        }
         // walls behind the start and past the finish
         if (P.z > START.z1 - 0.15 && P.y > -1) { P.z = START.z1 - 0.15; p.vel.z = Math.min(0, p.vel.z); }
         if (P.z < FINISH.z0 + 0.15 && P.y > -1) { P.z = FINISH.z0 + 0.15; p.vel.z = Math.max(0, p.vel.z); }
@@ -904,6 +919,7 @@ Hub.register({
           p.onGround = true;
           if (!wasGround) {
             p.jumped = false;
+            p.landedAt = time;
             p.vel.x *= 0.35; // "sticky" landings so you don't slide off a small panel
             p.vel.z *= 0.35;
             if (sup.kind === "panel") {
@@ -954,23 +970,27 @@ Hub.register({
         const d = Math.hypot(dx, dz);
         if (d >= BODY) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
+        // Jumping onto a tile someone is standing on: you keep your landing spot and THEY get
+        // shoved back about half a tile in the direction you were jumping.
+        const theyStand = Q.y < 0.2 && Q.y > -0.5; // on the glass / a platform
+        if (time - (q.lastBlock || -9) < 0.45) continue; // they're sliding away from your jump: don't nudge you
+        const jumping = !p.onGround || p.landedAt === time; // in the air, or touched down this frame
+        if (jumping && theyStand && P.y >= Q.y - 0.1) {
+          if (time - (q.lastBlock || 0) > 0.5) {
+            q.lastBlock = time;
+            let hx = p.vel.x, hz = p.vel.z, hl = Math.hypot(hx, hz);
+            if (hl < 0.5) { hx = -nx; hz = -nz; hl = 1; } // barely moving: shove them away from you
+            const r2 = (v) => Math.round(v * 100) / 100;
+            const sx = r2((hx / hl) * BLOCK_SHOVE), sz = r2((hz / hl) * BLOCK_SHOVE);
+            send({ t: "shove", to: q.id, x: sx, z: sz });
+            startHitAnim(q);
+            tone(170, 0.1, 0.1, "square");
+          }
+          continue; // no bounce for the jumper
+        }
         P.x += nx * (BODY - d); // push apart
         P.z += nz * (BODY - d);
         const vn = p.vel.x * nx + p.vel.z * nz; // < 0 means moving into them
-        // Jumping onto a tile someone is standing on: they hold their ground and you bounce back off them.
-        const theyStand = Q.y < 0.2 && Q.y > -0.5; // on the glass / a platform
-        if (!p.onGround && theyStand && P.y >= Q.y - 0.1) {
-          if (time - (q.lastBlock || 0) > 0.25) {
-            q.lastBlock = time;
-            const back = Math.max(3.5, -vn); // at least a little knockback
-            p.vel.x = nx * back;
-            p.vel.z = nz * back;
-            p.vel.y = Math.max(p.vel.y, 2.5); // small hop backward
-            startHitAnim(p);
-            tone(170, 0.1, 0.1, "square");
-          }
-          continue;
-        }
         if (vn < 0) {
           p.vel.x -= 1.6 * vn * nx; // bounce back
           p.vel.z -= 1.6 * vn * nz;
@@ -1096,6 +1116,13 @@ Hub.register({
       } else if (data.t === "step") {
         markStepped(data.row, data.side);
         p.best = Math.max(p.best, data.row); // how far they got (for results)
+      } else if (data.t === "shove") {
+        const q = order.find((o) => o.id === data.to);
+        if (q) startHitAnim(q);
+        if (data.to === room.id) {
+          const m = me();
+          if (m && !m.out && !m.finished) m.slide = { x: data.x / 0.25, z: data.z / 0.25, t: 0.25 };
+        }
       } else if (data.t === "push") {
         startPushAnim(p);
         (data.hits || []).forEach((h) => {
@@ -1246,7 +1273,7 @@ Hub.register({
 
       card.append(optionsBox(null), solo, el("label", "", "Play online with friends"), host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "gb3-help", "Keyboard: WASD / arrows, Space jump, F push · Controller: stick, A/✕ jump, X/□ push · Phone: joystick, JUMP, PUSH"));
+        el("div", "gb3-help", "Keyboard: WASD / arrows, Space jump · Controller: stick, A/✕ jump · Phone: joystick + JUMP"));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;
@@ -1387,15 +1414,8 @@ Hub.register({
     const camLook = new THREE.Vector3(0, 0.4, -1.4 - LOOK_AHEAD);
     let followY = 0;
 
-    function cameraTarget() {
-      const m = me();
-      if (!m) return null;
-      if (mode === "online" && m.out && m.mesh.position.y < -20) {
-        // you fell: watch whoever is still running
-        return order.find((p) => !p.out && !p.finished) || m;
-      }
-      return m;
-    }
+    const START_VIEW = new THREE.Vector3(0, 0, -1.4);
+    let camHeld = false; // true while you're out: the camera waits at the start
 
     function update(dt) {
       time += dt;
@@ -1447,15 +1467,23 @@ Hub.register({
         if (rules.showSafe && p.known && !p.stepped && !p.broken) p.edges.material.opacity = pulse;
       }));
 
-      // third-person camera
-      const t = cameraTarget();
-      const focus = t ? t.mesh.position : new THREE.Vector3(0, 0, -1.4);
-      const falling = t && t.out;
-      if (!falling) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
-      const camGoal = new THREE.Vector3(focus.x * 0.6, followY + CAM_UP, (falling ? camPos.z : focus.z + CAM_BACK));
-      camPos.lerp(camGoal, Math.min(1, dt * 4));
-      const lookGoal = falling ? focus : new THREE.Vector3(focus.x * 0.5, followY + 0.4, focus.z - LOOK_AHEAD);
-      camLook.lerp(lookGoal, Math.min(1, dt * (falling ? 2.5 : 5)));
+      // third-person camera. If you fall it jumps back to the start and stays there until you respawn.
+      const t = me();
+      const dead = !t || t.out;
+      const focus = dead ? START_VIEW : t.mesh.position;
+      if (!dead) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
+      const camGoal = new THREE.Vector3(focus.x * 0.6, (dead ? 0 : followY) + CAM_UP, focus.z + CAM_BACK);
+      const lookGoal = new THREE.Vector3(focus.x * 0.5, (dead ? 0 : followY) + 0.4, focus.z - LOOK_AHEAD);
+      if (dead && !camHeld) { // snap straight back to the start, no swooping
+        camHeld = true;
+        followY = 0;
+        camPos.copy(camGoal);
+        camLook.copy(lookGoal);
+      } else if (!dead) {
+        camHeld = false;
+        camPos.lerp(camGoal, Math.min(1, dt * 4));
+        camLook.lerp(lookGoal, Math.min(1, dt * 5));
+      }
       camera.position.copy(camPos);
       camera.lookAt(camLook);
     }

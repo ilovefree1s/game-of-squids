@@ -4,6 +4,9 @@ Hub.register({
   name: "Snake",
   description: "Eat, grow, don't bite yourself.",
   author: "Player 1",
+  color: "#3ddc84",
+  art: `<svg viewBox="0 0 120 70"><path d="M14 52 H50 V22 H86 V44 H104" fill="none" stroke="#3ddc84" stroke-width="9"
+    stroke-linejoin="round" stroke-linecap="round"/><rect x="100" y="14" width="10" height="10" fill="#ffcc33"/></svg>`,
 
   start(container, api) {
     const SIZE = 20, CELLS = 20;

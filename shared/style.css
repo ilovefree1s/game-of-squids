@@ -120,3 +120,66 @@ body.gos-fs #game { flex: 1; min-height: 0; border-radius: 8px; }
   #fs { padding: 8px 10px; }
   body.gos-fs #hud { padding-right: 150px; font-size: .9rem; }
 }
+
+/* ================= home screen ================= */
+:root { --pink: #ff2e88; --teal: #2de1c2; }
+
+/* dark arena floor with faint painted shapes */
+body.home-mode {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255,46,136,.28), transparent 55%),
+    radial-gradient(ellipse at 15% 110%, rgba(45,225,194,.18), transparent 50%),
+    radial-gradient(ellipse at 85% 110%, rgba(255,46,136,.18), transparent 50%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520' viewBox='0 0 520 520'><g fill='none' stroke='%23ff2e88' stroke-opacity='.07' stroke-width='14'><circle cx='110' cy='120' r='70'/><path d='M370 60 L450 200 L290 200 Z'/><rect x='300' y='330' width='150' height='150'/><circle cx='120' cy='410' r='55'/></g></svg>"),
+    #0b0b14;
+  min-height: 100vh;
+}
+body.home-mode #title { visibility: hidden; }
+
+.home { max-width: 640px; margin: 0 auto; padding: 0 0 40px; text-align: center; }
+.home-title {
+  margin: 0;
+  font-family: "Black Ops One", Impact, "Arial Black", sans-serif;
+  font-weight: 400;
+  line-height: .9;
+  letter-spacing: .04em;
+  color: #f4f1ee;
+  text-shadow: 0 0 18px rgba(255,46,136,.55), 0 4px 0 #6b0f3a, 0 8px 24px rgba(0,0,0,.8);
+  display: flex; flex-direction: column; align-items: center;
+}
+.home-title .w1, .home-title .w3 { font-size: clamp(3.2rem, 15vw, 6.6rem); }
+.home-title .w3 { color: var(--pink); text-shadow: 0 0 22px rgba(255,46,136,.8), 0 4px 0 #4a0a28, 0 8px 24px rgba(0,0,0,.8); }
+.home-title .w2 { font-size: clamp(1.1rem, 4vw, 1.6rem); letter-spacing: .5em; color: var(--teal);
+                  text-shadow: 0 0 12px rgba(45,225,194,.7); margin: 6px 0 4px; padding-left: .5em; }
+.home-sub { font-family: Rajdhani, system-ui, sans-serif; font-weight: 700; letter-spacing: .25em;
+            text-transform: uppercase; color: var(--muted); margin: 14px 0 26px; }
+
+.home-buttons { display: flex; flex-direction: column; gap: 16px; align-items: stretch; padding: 0 4px; }
+.gbtn {
+  --c: var(--teal);
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 96px; padding: 14px 18px 14px 24px;
+  border-radius: 16px; border: 2px solid var(--c);
+  background: linear-gradient(90deg, rgba(10,10,20,.92) 45%, rgba(10,10,20,.55)),
+              radial-gradient(ellipse at 85% 50%, color-mix(in srgb, var(--c) 35%, transparent), transparent 70%);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--c) 55%, transparent), inset 0 0 18px color-mix(in srgb, var(--c) 18%, transparent);
+  color: var(--text); text-align: left; cursor: pointer;
+  transition: transform .12s, box-shadow .12s;
+}
+.gbtn:hover, .gbtn:focus-visible { transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 0 26px color-mix(in srgb, var(--c) 80%, transparent), inset 0 0 22px color-mix(in srgb, var(--c) 25%, transparent); }
+.gbtn:active { transform: scale(.99); }
+.gbtn-name { font-family: "Black Ops One", Impact, sans-serif; font-size: clamp(1.4rem, 6vw, 2.1rem);
+             letter-spacing: .04em; color: var(--c); text-shadow: 0 0 10px color-mix(in srgb, var(--c) 60%, transparent); }
+.gbtn-sub { font-family: Rajdhani, system-ui, sans-serif; font-weight: 600; font-size: 1rem; color: var(--muted); margin-top: 2px; }
+.gbtn-art { flex: none; width: clamp(90px, 28vw, 150px); height: 70px; display: grid; place-items: center; }
+.gbtn-art svg { width: 100%; height: 100%; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c) 70%, transparent)); }
+
+.gbtn.gauntlet { min-height: 110px; background: linear-gradient(90deg, rgba(255,46,136,.28), rgba(10,10,20,.85) 70%); }
+.gbtn.gauntlet .gbtn-name { color: #fff; font-size: clamp(1.6rem, 7vw, 2.5rem); text-shadow: 0 0 14px rgba(255,46,136,.9); }
+.gbtn.gauntlet .gbtn-sub { color: #ffd1e5; }
+
+.overlay .big { font-size: 1.8rem; font-weight: 800; }
+
+html { background: #0b0b14; }

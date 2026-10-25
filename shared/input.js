@@ -132,6 +132,8 @@ const Input = (() => {
     pushBtn.className = "inp-jump inp-push";
     pushBtn.textContent = "PUSH";
     ui.append(stick, jumpBtn, pushBtn);
+    const hasPush = opts.push !== false; // Input.create(el, { push: false }) hides the PUSH button
+    if (!hasPush) pushBtn.style.display = "none";
     parent.append(ui);
 
     let layout = loadLayout();
@@ -231,6 +233,7 @@ const Input = (() => {
       const s1 = slider("Joystick size", "stick", 80, 220);
       const s2 = slider("Jump size", "jump", 60, 180);
       const s3 = slider("Push size", "push", 50, 160);
+      if (!hasPush) s3.parentElement.style.display = "none";
       const btns = document.createElement("div");
       btns.className = "row";
       const reset = document.createElement("button");
