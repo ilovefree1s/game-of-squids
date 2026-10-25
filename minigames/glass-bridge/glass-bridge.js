@@ -15,7 +15,7 @@
 // FIRST PLAYER ACROSS WINS. PUSH shoves whoever is in front of you.
 //
 // Controls (shared/input.js):
-//   Keyboard   WASD / arrows to move, Space to jump  (F = push, currently turned off: PUSH_ENABLED)
+//   Keyboard   WASD / arrows to move, Space to jump, F to push (3 second cooldown)
 //   Controller left stick / d-pad to move, A / ✕ to jump, X / □ to push
 //   Phone      on-screen joystick + JUMP + PUSH buttons (movable / resizable)
 //
@@ -55,11 +55,11 @@ Hub.register({
     const SPEED = 4.2; // run speed
     const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
     const SEND_EVERY = 0.1; // online: seconds between position updates
-    const PUSH_ENABLED = false; // the PUSH button is turned off for now (set true to bring it back)
+    const PUSH_ENABLED = true; // the PUSH button (F / X□ / phone PUSH)
     const BLOCK_SHOVE = PANEL * 0.5; // jump into someone standing on a tile: they slide back half a tile
     const PUSH_RANGE = 1.5; // how far a push reaches
     const PUSH_FORCE = 9; // how hard a push shoves
-    const PUSH_COOLDOWN = 0.7; // seconds between pushes
+    const PUSH_COOLDOWN = 3; // seconds between pushes
     const PUSH_ANIM = 0.45; // how long the shove animation lasts
     const HIT_ANIM = 0.45; // how long the "got hit" stagger lasts
 
@@ -130,6 +130,10 @@ Hub.register({
       .gb3-player.out { background: #2a2a34; color: #777; text-decoration: line-through; }
       .gb3-player.finished { background: #2f8f4e; }
       .gb3-timer { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 2px 8px #000; }
+      .gb3-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+      .gb3-pushcd { font-size: .85rem; font-weight: 800; letter-spacing: .05em; text-shadow: 0 2px 6px #000;
+                    color: #ff8fb5; font-variant-numeric: tabular-nums; }
+      .gb3-pushcd.ready { color: var(--good); }
       .gb3-timer.low { color: var(--bad); }
       .gb3-msg { position: absolute; left: 0; right: 0; bottom: 16px; padding: 0 170px; pointer-events: none; white-space: pre-line;
                  font-size: 1.05rem; text-shadow: 0 2px 6px #000; text-align: center; }
@@ -184,7 +188,10 @@ Hub.register({
     const hud = el("div", "gb3-hud");
     const playersEl = el("div", "gb3-players");
     const timerEl = el("div", "gb3-timer");
-    hud.append(playersEl, timerEl);
+    const pushCdEl = el("div", "gb3-pushcd");
+    const hudRight = el("div", "gb3-right");
+    hudRight.append(timerEl, pushCdEl);
+    hud.append(playersEl, hudRight);
     const msg = el("div", "gb3-msg", "");
     const countEl = el("div", "gb3-count", "");
     const lobby = el("div", "gb3-lobby");
@@ -611,7 +618,7 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too") +
+      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove." : "WASD / arrows to move · Space to jump · F to push · controllers work too") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -883,6 +890,8 @@ Hub.register({
       const P = p.mesh.position;
 
       if (wantJump && p.onGround) {
+        const from = supportAt(P.x, P.z);
+        p.jumpFrom = from && from.kind === "panel" ? from.row * 2 + from.side : null; // which glass tile (or none)
         p.vel.y = JUMP_V;
         p.onGround = false;
         p.jumped = true;
@@ -975,7 +984,11 @@ Hub.register({
         const theyStand = Q.y < 0.2 && Q.y > -0.5; // on the glass / a platform
         if (time - (q.lastBlock || -9) < 0.45) continue; // they're sliding away from your jump: don't nudge you
         const jumping = !p.onGround || p.landedAt === time; // in the air, or touched down this frame
-        if (jumping && theyStand && P.y >= Q.y - 0.1) {
+        // only when you jump from one glass tile onto a DIFFERENT tile they're standing on
+        const theirs = supportAt(Q.x, Q.z);
+        const theirTile = theirs && theirs.kind === "panel" ? theirs.row * 2 + theirs.side : null;
+        const tileToTile = p.jumpFrom != null && theirTile != null && theirTile !== p.jumpFrom;
+        if (jumping && tileToTile && theyStand && P.y >= Q.y - 0.1) {
           if (time - (q.lastBlock || 0) > 0.5) {
             q.lastBlock = time;
             let hx = p.vel.x, hz = p.vel.z, hl = Math.hypot(hx, hz);
@@ -988,19 +1001,10 @@ Hub.register({
           }
           continue; // no bounce for the jumper
         }
-        P.x += nx * (BODY - d); // push apart
+        // anything else (walking into someone, jumping off the start platform): no bounce or shove,
+        // you just can't walk through each other
+        P.x += nx * (BODY - d);
         P.z += nz * (BODY - d);
-        const vn = p.vel.x * nx + p.vel.z * nz; // < 0 means moving into them
-        if (vn < 0) {
-          p.vel.x -= 1.6 * vn * nx; // bounce back
-          p.vel.z -= 1.6 * vn * nz;
-          if (mode === "online" && -vn > 1 && time - (q.lastBump || 0) > 0.3) {
-            q.lastBump = time;
-            const push = Math.min(7, -vn * 1.4);
-            send({ t: "bump", to: q.id, x: Math.round(-nx * push * 100) / 100, z: Math.round(-nz * push * 100) / 100 });
-            tone(160, 0.08, 0.08, "square");
-          }
-        }
       }
     }
 
@@ -1027,6 +1031,23 @@ Hub.register({
       if (hits.length) tone(150, 0.15, 0.12, "square");
       send({ t: "push", hits });
     }
+    let lastCdText = null;
+    function updatePushCooldown() {
+      const m = me();
+      if (!PUSH_ENABLED || !started || done || !m || m.out) {
+        if (lastCdText !== "") { pushCdEl.textContent = ""; lastCdText = ""; }
+        return;
+      }
+      const left = Math.max(0, PUSH_COOLDOWN - (time - (m.lastPush ?? -99)));
+      const text = left > 0 ? `PUSH ${left.toFixed(1)}s` : "PUSH ready";
+      if (text !== lastCdText) {
+        lastCdText = text;
+        pushCdEl.textContent = text;
+        pushCdEl.classList.toggle("ready", left === 0);
+        input.setPushCharge(1 - left / PUSH_COOLDOWN);
+      }
+    }
+
     function startPushAnim(p) {
       p.pushT = PUSH_ANIM;
       p.hitT = 0;
@@ -1273,7 +1294,7 @@ Hub.register({
 
       card.append(optionsBox(null), solo, el("label", "", "Play online with friends"), host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "gb3-help", "Keyboard: WASD / arrows, Space jump · Controller: stick, A/✕ jump · Phone: joystick + JUMP"));
+        el("div", "gb3-help", "Keyboard: WASD / arrows, Space jump, F push · Controller: stick, A/✕ jump, X/□ push · Phone: joystick, JUMP, PUSH"));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;
@@ -1447,6 +1468,7 @@ Hub.register({
       }
 
       updateEffects(dt);
+      updatePushCooldown();
       for (let i = shards.length - 1; i >= 0; i--) {
         const s = shards[i];
         s.userData.v.y -= GRAVITY * dt;

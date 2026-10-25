@@ -71,8 +71,8 @@ minigames/
 
 | Game | Author | Status |
 |------|--------|--------|
-| Snake | Player 1 | playable |
-| Reaction Time | Player 2 | playable |
+| Snake | (starter demo) | switched off |
+| Reaction Time | (starter demo) | switched off |
 | Glass Bridge (3D, online, KayKit characters, push, first across wins) | ilovefree1s | playable |
 | Red Light, Green Light (3D, online up to 8, secret alliances, push, sprint) | Cougar | playable |
 

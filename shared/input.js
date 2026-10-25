@@ -5,6 +5,7 @@
 //   const m = input.move();       // { x, y } from -1..1  (x: right is +, y: forward/up is +)
 //   if (input.jump()) { ... }      // true once per press of the jump button
 //   if (input.push()) { ... }      // true once per press of the push button
+//   input.setPushCharge(0.4);      // optional: show a cooldown on the phone PUSH button (0 = empty, 1 = ready)
 //   input.showTouch(false);        // hide the phone controls (e.g. on a menu screen)
 //   input.editLayout(onDone);      // let the player drag/resize the phone controls (saved on their device)
 //   input.destroy();               // in your game's cleanup
@@ -314,6 +315,12 @@ const Input = (() => {
         return p;
       },
       clearJump() { jumpQueued = false; pushQueued = false; },
+      setPushCharge(f) {
+        const v = Math.max(0, Math.min(1, f));
+        pushBtn.style.opacity = v >= 1 ? "" : String(0.35 + 0.4 * v);
+        pushBtn.style.backgroundImage = v >= 1 ? "" :
+          `conic-gradient(rgba(255,255,255,.35) ${Math.round(v * 360)}deg, transparent 0)`;
+      },
       showTouch(on) { wanted = on; applyVisible(); },
       editLayout,
       get isTouch() { return isTouch; },

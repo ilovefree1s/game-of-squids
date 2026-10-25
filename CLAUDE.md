@@ -1,7 +1,8 @@
 # Game of Squids: notes for Claude
 
 Two friends build this game together, each with their own Claude:
-- **Justin** (GitHub: ilovefree1s) owns the repo. His games: Snake, Reaction Time, Glass Bridge.
+- **Justin** (GitHub: ilovefree1s) owns the repo. His game: Glass Bridge. (Snake and Reaction Time
+  were demo games from the starter project; they're switched off in `index.html`, files kept.)
 - **Cougar** builds Red Light, Green Light (`minigames/red-light/`).
 
 Neither of them is a Git expert. Keep jargon to a minimum, and define any Git term you use
@@ -59,4 +60,9 @@ add a dated line under their heading below. Their Claude will mention it in chat
 
 ## Notes for Cougar
 
-(none yet)
+- 2026-10-25 (from Justin): **Snake and Reaction Time are off the home screen** (and out of THE GAUNTLET).
+  They were demo games from the starter project. Their two `<script>` lines in `index.html` are commented
+  out; the files are still in `minigames/`. Home screen now shows Glass Bridge and Red Light. (v0.14.0)
+- 2026-10-25 (from Justin): **`shared/input.js` got one new, optional function**: `input.setPushCharge(0..1)`
+  shows a cooldown fill on the phone PUSH button. Nothing else in `input.js` changed, and Red Light was
+  tested and still loads fine. You can use it in Red Light if you want a visible push cooldown. (v0.14.0)
