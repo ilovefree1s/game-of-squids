@@ -1467,7 +1467,19 @@ Hub.register({
       Models.loadProps(["Skeleton_Crossbow", "Skeleton_Arrow"]).catch(() => {});
     }
 
+    // Redrawing a card (menu or lobby) keeps where you'd scrolled to.
+    function scrollOf(kind) {
+      const old = lobby.querySelector(".rl-card");
+      return old && old.dataset.kind === kind ? old.scrollTop : 0;
+    }
+    function putCard(card, kind, top) {
+      card.dataset.kind = kind;
+      lobby.append(card);
+      card.scrollTop = top;
+    }
+
     function showMenu() {
+      const keepTop = scrollOf("menu");
       lobby.innerHTML = "";
       lobby.hidden = false;
       const card = el("div", "rl-card");
@@ -1499,7 +1511,7 @@ Hub.register({
       dumBox.checked = (() => { try { return localStorage.getItem("rl:dummies") === "1"; } catch { return false; } })();
       dumBox.onchange = () => { try { localStorage.setItem("rl:dummies", dumBox.checked ? "1" : "0"); } catch {} };
       dumRow.append(dumBox, el("span", "", `Add ${DUMMIES} practice dummies (stand still: push them, sprint into them, hide behind them)`));
-      const soloCpus = cpuPanel(cpuSetup, true, () => { saveCpus(); showMenu(); });
+      const soloCpus = cpuPanel(cpuSetup, true, (soft) => { saveCpus(); if (!soft) showMenu(); });
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         audio();
@@ -1538,7 +1550,7 @@ Hub.register({
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
-      lobby.append(card);
+      putCard(card, "menu", keepTop);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;
         note.textContent = "Online play unavailable (Supabase library didn't load).";
@@ -1705,6 +1717,7 @@ Hub.register({
     function renderRoom(list) {
       if (started && !done) return;
       if (mode !== "online") return;
+      const keepTop = scrollOf("room");
       lobby.innerHTML = "";
       lobby.hidden = false;
       const card = el("div", "rl-card");
@@ -1762,7 +1775,7 @@ Hub.register({
       else if (myIndex >= MAX_ONLINE) { note = `Room is full (${MAX_ONLINE} players).`; bad = true; }
       else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
       if (iAmHost && !inGame) {
-        card.append(cpuPanel(cpuSetup, true, () => { saveCpus(); room.update({ cpus: cpuSetup }); renderRoom(roomPlayers); }));
+        card.append(cpuPanel(cpuSetup, true, (soft) => { saveCpus(); room.update({ cpus: cpuSetup }); if (!soft) renderRoom(roomPlayers); }));
       } else if (hostP && hostP.cpus && hostP.cpus.count) {
         card.append(cpuPanel(hostP.cpus, false));
       }
@@ -1777,7 +1790,7 @@ Hub.register({
       const leave = el("button", "alt", "Leave lobby");
       leave.onclick = () => { leaveRoom(); resetMatch(); results = null; mode = "lobby"; myId = "solo"; showMenu(); };
       card.append(el("div", "rl-note" + (bad ? " bad" : ""), note), volumePanel(), leave);
-      lobby.append(card);
+      putCard(card, "room", keepTop);
     }
 
     function hostStart(list) {
@@ -1859,7 +1872,7 @@ Hub.register({
           const sel = el("select");
           for (let v = 1; v <= 5; v++) { const o = el("option", "", String(v)); o.value = v; if (v === t[key]) o.selected = true; sel.append(o); }
           sel.addEventListener("keydown", (e) => e.stopPropagation());
-          sel.onchange = () => { t[key] = +sel.value; onChange(); };
+          sel.onchange = () => { t[key] = +sel.value; onChange(true); }; // just this value: no redraw
           grid.append(sel);
         });
       }

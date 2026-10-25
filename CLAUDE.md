@@ -67,14 +67,4 @@ add a dated line under their heading below. Their Claude will mention it in chat
 
 ## Notes for Cougar
 
-- 2026-10-25 (from Justin): **Justin's Claude now merges Justin's changes itself** (see "Merging" above).
-  It still tests Red Light and leaves you a note here whenever it touches shared files.
-- 2026-10-25 (from Justin): **Version numbers collided again:** Glass Bridge's #14 and Red Light's #15 both
-  used v0.14.0. Main is now v0.14.1.
-
-- 2026-10-25 (from Justin): **Snake and Reaction Time are off the home screen** (and out of THE GAUNTLET).
-  They were demo games from the starter project. Their two `<script>` lines in `index.html` are commented
-  out; the files are still in `minigames/`. Home screen now shows Glass Bridge and Red Light. (v0.14.0)
-- 2026-10-25 (from Justin): **`shared/input.js` got one new, optional function**: `input.setPushCharge(0..1)`
-  shows a cooldown fill on the phone PUSH button. Nothing else in `input.js` changed, and Red Light was
-  tested and still loads fine. You can use it in Red Light if you want a visible push cooldown. (v0.14.0)
+(none right now)
