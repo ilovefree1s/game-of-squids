@@ -582,35 +582,22 @@ Hub.register({
       if (!(b instanceof AudioBuffer)) { loadSounds(); return; }
       const far = camera.position.distanceTo(p.mesh.position);
       const level = Math.max(0.25, Math.min(1, 1.15 - far / 40));
-      // falling away: the pitch sags, it gets muffled and quieter, and echoes trail off down the pit
+      // falling away: the pitch sags, it gets muffled, and it slowly fades to silence (no echo)
       const t = a.currentTime, rate = 0.96 + (h % 9) / 100;
-      const len = b.duration / (rate * 0.8); // how long the scream lasts while it slows down
+      const len = b.duration / (rate * 0.75); // how long the scream lasts while it slows down
       const src = a.createBufferSource(); src.buffer = b;
       src.playbackRate.setValueAtTime(rate, t);
-      src.playbackRate.linearRampToValueAtTime(rate * 0.62, t + len);
+      src.playbackRate.linearRampToValueAtTime(rate * 0.55, t + len);
       const lp = a.createBiquadFilter(); lp.type = "lowpass";
       lp.frequency.setValueAtTime(7000, t);
-      lp.frequency.exponentialRampToValueAtTime(700, t + len + 0.3);
+      lp.frequency.exponentialRampToValueAtTime(500, t + len);
       const g = a.createGain();
       g.gain.setValueAtTime(level, t);
-      g.gain.linearRampToValueAtTime(level * 0.55, t + len * 0.5);
-      g.gain.exponentialRampToValueAtTime(0.001, t + len + 0.2);
-      // echo: a short delay fed back into itself, each repeat darker and quieter
-      const delay = a.createDelay(1); delay.delayTime.value = 0.23;
-      const fb = a.createGain(); fb.gain.value = 0.6;
-      const dark = a.createBiquadFilter(); dark.type = "lowpass"; dark.frequency.value = 1400;
-      const wet = a.createGain();
-      wet.gain.setValueAtTime(0.55, t);
-      wet.gain.linearRampToValueAtTime(0.4, t + len);
-      wet.gain.exponentialRampToValueAtTime(0.001, t + len + 2.2);
-      src.connect(lp).connect(g);
-      g.connect(a.destination);
-      g.connect(delay);
-      delay.connect(dark).connect(fb).connect(delay);
-      dark.connect(wet).connect(a.destination);
+      g.gain.exponentialRampToValueAtTime(level * 0.25, t + len * 0.6);
+      g.gain.exponentialRampToValueAtTime(0.001, t + len);
+      src.connect(lp).connect(g).connect(a.destination);
       src.start(t);
-      src.stop(t + len + 0.25);
-      setTimeout(() => { try { delay.disconnect(); fb.disconnect(); dark.disconnect(); wet.disconnect(); } catch {} }, (len + 2.6) * 1000);
+      src.stop(t + len + 0.05);
     }
     function screamCheck(p) { // called every frame for every player
       const y = p.mesh.position.y;
