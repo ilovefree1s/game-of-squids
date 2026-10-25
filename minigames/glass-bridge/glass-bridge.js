@@ -107,6 +107,28 @@ Hub.register({
     const later = (fn, ms) => timeouts.push(setTimeout(fn, ms));
 
     const randomSafe = () => Array.from({ length: STEPS }, () => (Math.random() < 0.5 ? 0 : 1));
+    // "7" / "07" / "007" -> "007"; anything not 1..456 -> "" (means random)
+    const cleanNum = (v) => {
+      const n = parseInt(String(v || "").replace(/\D/g, ""), 10);
+      return n >= 1 && n <= 456 ? String(n).padStart(3, "0") : "";
+    };
+    // give everyone the number they asked for; duplicates and blanks get a random free number
+    // (the earlier player in the list wins a tie — online that's the host first)
+    const assignNumbers = (wanted) => {
+      const used = new Set();
+      const out = wanted.map((w) => {
+        const n = cleanNum(w);
+        if (n && !used.has(n)) { used.add(n); return n; }
+        return null;
+      });
+      return out.map((n) => {
+        if (n) return n;
+        let r;
+        do r = String(Math.floor(Math.random() * 456) + 1).padStart(3, "0"); while (used.has(r));
+        used.add(r);
+        return r;
+      });
+    };
     const randomNumbers = (n) => {
       const s = new Set();
       while (s.size < n) s.add(String(Math.floor(Math.random() * 456) + 1).padStart(3, "0"));
@@ -865,7 +887,7 @@ Hub.register({
     // Host: start a match (first game or rematch) with everyone in the room
     function hostStart(list) {
       const roster = list.slice(0, MAX_ONLINE);
-      const nums = randomNumbers(roster.length);
+      const nums = assignNumbers(roster.map((p) => p.num));
       const data = {
         t: "start",
         m: Math.random().toString(36).slice(2, 10),
@@ -1192,6 +1214,7 @@ Hub.register({
     let roomNote = "";
     let roomNoteBad = false;
     const savedName = (() => { try { return localStorage.getItem("gos:name") || ""; } catch { return ""; } })();
+    let myNum = (() => { try { return cleanNum(localStorage.getItem("gos:num")); } catch { return ""; } })();
     let myChar = (() => { try { return Models.byId(localStorage.getItem("gos:char") || "tracksuit").id; } catch { return "tracksuit"; } })();
     if (Models.available()) Models.load(myChar).catch(() => {}); // start downloading early
 
@@ -1247,6 +1270,15 @@ Hub.register({
       card.append(el("label", "", "Your name"));
       const nameIn = makeInput(savedName, "e.g. Sam", 14);
       card.append(nameIn);
+      card.append(el("label", "", "Your number (1–456, blank = random)"));
+      const numIn = makeInput(myNum, "e.g. 456", 3);
+      numIn.inputMode = "numeric";
+      numIn.onchange = () => {
+        myNum = cleanNum(numIn.value);
+        numIn.value = myNum;
+        try { localStorage.setItem("gos:num", myNum); } catch {}
+      };
+      card.append(numIn);
       if (Models.available()) {
         card.append(el("label", "", "Character"));
         const pick = el("select");
@@ -1268,7 +1300,7 @@ Hub.register({
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         mode = "solo";
-        const nums = randomNumbers(SOLO_PLAYERS);
+        const nums = assignNumbers([myNum, "", ""].slice(0, SOLO_PLAYERS));
         beginMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num, char: myChar })));
       };
       const note = el("div", "gb3-note bad");
@@ -1374,7 +1406,7 @@ Hub.register({
               showRoom("Couldn't connect to the online server. Check your internet, or Realtime settings in Supabase.", true);
             }
           },
-        }, { char: myChar, opts: { ...opts } });
+        }, { char: myChar, opts: { ...opts }, num: myNum });
       } catch (err) {
         return showRoom("Online play failed to start: " + err.message, true);
       }
@@ -1400,7 +1432,8 @@ Hub.register({
       list.slice(0, MAX_ONLINE).forEach((p, i) => {
         const mine = room && p.id === room.id;
         const ch = Models.available() && p.char ? ` · ${Models.byId(p.char).label}` : "";
-        ul.append(el("li", "", `${p.name}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}${ch}`));
+        const num = cleanNum(p.num) ? ` #${cleanNum(p.num)}` : "";
+        ul.append(el("li", "", `${p.name}${num}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}${ch}`));
       });
       card.append(el("label", "", `Players (${Math.min(list.length, MAX_ONLINE)}/${MAX_ONLINE})`), ul);
 
