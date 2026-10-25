@@ -2,9 +2,11 @@
 // In every row one panel is tempered (holds) and one is weak (shatters the moment you land on it).
 //
 // SOLO:   3 players, one at a time. When one falls, the next starts from the platform.
+// If EVERYONE falls, everyone respawns for another round; broken glass stays broken.
+// The match ends when someone crosses or the 90s clock runs out.
 // ONLINE: create a room, share the 4-letter code, up to 8 friends join.
 //         Everyone runs the same bridge at the same time. You can watch each other —
-//         and learn from each other's mistakes. One life each.
+//         and learn from each other's mistakes. Online, the host can Rematch from the results screen.
 //
 // Controls (shared/input.js):
 //   Keyboard   WASD / arrows to move, Space to jump
@@ -55,6 +57,10 @@ Hub.register({
     let order = []; // all players: { id, name, num, mesh, out, finished, best, vel, onGround, target, ... }
     let soloIdx = 0; // solo: which of the 3 players you're controlling
     let soloBest = -1;
+    let round = 1; // goes up each time everyone falls and respawns
+    let respawnPending = false;
+    let matchId = ""; // online: messages from an older match are ignored
+    const send = (d) => { if (mode === "online" && room) room.send({ ...d, m: matchId }); };
     let started = false;
     let done = false;
     let countdown = 0; // > 0 while counting down
@@ -423,8 +429,40 @@ Hub.register({
       return p;
     }
 
+    // Put the bridge back to brand new (for a rematch).
+    function resetMatch() {
+      timeouts.forEach(clearTimeout);
+      timeouts.length = 0;
+      order.forEach((p) => {
+        scene.remove(p.mesh);
+        p.mesh.traverse((o) => {
+          if (o.geometry) o.geometry.dispose();
+          if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+        });
+      });
+      order = [];
+      panels.forEach((row) => row.forEach((p) => {
+        p.broken = p.known = p.stepped = false;
+        p.mesh.visible = true;
+        p.mesh.material.color.set(0xaee8ff);
+        p.mesh.material.emissive.set(0x000000);
+        p.edges.material.color.set(0xbfefff);
+        p.edges.material.opacity = 0.5;
+      }));
+      shards.forEach((s) => { scene.remove(s); s.geometry.dispose(); });
+      shards.length = 0;
+      started = done = timeUpFired = respawnPending = false;
+      soloIdx = 0;
+      soloBest = -1;
+      round = 1;
+      countEl.textContent = "";
+      api.setScore(0);
+    }
+
     // roster: [{ id, name, num }]
-    function startMatch(safeArr, roster) {
+    function startMatch(safeArr, roster, id = "") {
+      if (started) resetMatch();
+      matchId = id;
       safe = safeArr;
       order = roster.map(addPlayer);
       if (mode === "solo") {
@@ -450,7 +488,7 @@ Hub.register({
       const { row, side } = sup;
       if (safe[row] === side) {
         markStepped(row, side);
-        if (mode === "online") room.send({ t: "step", row, side });
+        send({ t: "step", row, side });
         if (row > p.best) {
           p.best = row;
           if (mode === "online" || row > soloBest) {
@@ -461,7 +499,7 @@ Hub.register({
         }
       } else {
         breakPanel(row, side);
-        if (mode === "online") room.send({ t: "break", row, side });
+        send({ t: "break", row, side });
       }
     }
 
@@ -504,13 +542,14 @@ Hub.register({
       tone(180, 0.6, 0.12, "sawtooth");
       say(`${nameOf(p)} fell!`, "bad");
       if (mode === "online") {
-        if (isMine(p)) room.send({ t: "fell" });
+        if (isMine(p)) send({ t: "fell" });
         return checkAllDone();
       }
       // solo: next player steps up
       later(() => {
+        if (done) return;
         const next = order.findIndex((q) => !q.out && !q.finished);
-        if (next < 0) return endMatch();
+        if (next < 0) return checkAllDone();
         soloIdx = next;
         const q = me();
         q.mesh.position.set(0, 0, -1.4);
@@ -528,14 +567,47 @@ Hub.register({
       say(`${nameOf(p)} made it across!`, "good");
       if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
       if (mode === "online") {
-        if (isMine(p)) room.send({ t: "finish" });
+        if (isMine(p)) send({ t: "finish" });
         return checkAllDone();
       }
       endMatch();
     }
 
+    // Everyone has either crossed or fallen:
+    //  - someone crossed  -> the match is over
+    //  - everyone fell    -> everyone respawns (broken glass stays broken)
     function checkAllDone() {
-      if (order.length && order.every((p) => p.out || p.finished)) later(endMatch, 1500);
+      if (done || respawnPending || !order.length) return;
+      if (!order.every((p) => p.out || p.finished)) return;
+      if (order.some((p) => p.finished)) return later(endMatch, 1500);
+      respawnPending = true;
+      later(respawnAll, 1800);
+    }
+
+    function respawnAll() {
+      respawnPending = false;
+      if (done) return;
+      round++;
+      let k = 0;
+      order.forEach((p) => {
+        if (p.left) return; // left the room: don't bring them back
+        p.out = false;
+        p.mesh.visible = true;
+        p.mesh.rotation.set(0, 0, 0);
+        p.vel.set(0, 0, 0);
+        p.onGround = true;
+        p.target = null;
+        p.lastSent = null;
+        if (mode === "solo") p.mesh.position.set(k === 0 ? 0 : k === 1 ? -2.5 : 2.5, 0, k === 0 ? -1.4 : 1.2);
+        else p.mesh.position.copy(spawnSpot(order.indexOf(p)));
+        k++;
+      });
+      soloIdx = 0;
+      input.clearJump();
+      countdown = 2;
+      renderPlayers();
+      say(`Everyone fell! Round ${round}: respawning. The broken glass stays broken.`, "bad");
+      tone(330, 0.3, 0.1);
     }
 
     function timeUp() {
@@ -563,9 +635,57 @@ Hub.register({
         if (iSurvived) api.addScore(100);
         say(survivors.length ? `Survivors: ${survivors.map((p) => p.name).join(", ")}` : "Nobody survived. The bridge wins.",
           iSurvived ? "good" : "bad");
+        if (room) room.update({ inGame: false }); // friends can join before the rematch
       }
       input.showTouch(false);
-      later(api.gameOver, 3000);
+      if (mode === "solo") later(api.gameOver, 3000);
+      else later(showResults, 2500);
+    }
+
+    // Online: results + rematch screen
+    function showResults() {
+      if (!done || mode !== "online" || !room) return;
+      lobby.innerHTML = "";
+      lobby.hidden = false;
+      const card = el("div", "gb3-card");
+      card.append(el("h2", "", "Results"));
+      const ul = el("ul", "gb3-list");
+      order.forEach((p) => {
+        const mine = isMine(p) ? " (you)" : "";
+        ul.append(el("li", "", `${p.finished ? "✅" : "💀"} ${p.num} ${p.name}${mine}${p.finished ? " made it" : " fell"}`));
+      });
+      card.append(ul);
+      const here = roomPlayers; // everyone in the room now, oldest first
+      const iAmHost = here.length > 0 && here[0].id === room.id;
+      const newcomers = here.filter((p) => !order.some((o) => o.id === p.id));
+      if (newcomers.length) card.append(el("div", "gb3-note", `Joined for the next game: ${newcomers.map((p) => p.name).join(", ")}`));
+      if (iAmHost) {
+        const n = Math.min(here.length, MAX_ONLINE);
+        const again = el("button", "", `Rematch (${n} player${n === 1 ? "" : "s"})`);
+        again.onclick = () => hostStart(here);
+        card.append(again);
+      } else {
+        card.append(el("div", "gb3-note", "Waiting for the host 👑 to start a rematch…"));
+      }
+      const leave = el("button", "alt", "Leave room");
+      leave.onclick = () => { if (room) room.leave(); room = null; lobby.hidden = true; api.gameOver(); };
+      card.append(leave);
+      lobby.append(card);
+    }
+
+    // Host: start a match (first game or rematch) with everyone in the room
+    function hostStart(list) {
+      const roster = list.slice(0, MAX_ONLINE);
+      const nums = randomNumbers(roster.length);
+      const data = {
+        t: "start",
+        m: Math.random().toString(36).slice(2, 10),
+        safe: randomSafe(),
+        roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i] })),
+      };
+      room.send(data);
+      room.update({ inGame: true });
+      startMatch(data.safe, data.roster, data.m);
     }
 
     // ---------- physics ----------
@@ -630,7 +750,7 @@ Hub.register({
           p.sendT = 0;
           p.lastSent = P.clone();
           const r2 = (v) => Math.round(v * 100) / 100;
-          room.send({ t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
+          send({ t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
         }
       }
     }
@@ -651,12 +771,15 @@ Hub.register({
     // ---------- online messages ----------
     function onRoomMessage(data, from) {
       if (data.t === "start") {
-        if (started) return;
-        if (!data.roster.some((r) => r.id === room.id)) return showRoom("The game started without you (room full).", true);
+        if (started && !done) return; // already playing
+        if (!data.roster.some((r) => r.id === room.id)) {
+          if (!started) showRoom("The game started without you (room full).", true);
+          return;
+        }
         room.update({ inGame: true });
-        return startMatch(data.safe, data.roster);
+        return startMatch(data.safe, data.roster, data.m);
       }
-      if (!started) return;
+      if (!started || data.m !== matchId) return; // not for this match
       const p = order.find((q) => q.id === from);
       if (!p) return;
       if (data.t === "pos") {
@@ -671,12 +794,17 @@ Hub.register({
 
     function onRoomPlayers(list) {
       if (!started) return renderRoom(list);
+      roomPlayers = list;
+      if (done) return showResults(); // results screen: keep the player list fresh
       const here = new Set(list.map((p) => p.id));
       order.forEach((p) => {
-        if (!p.out && !p.finished && !here.has(p.id)) {
+        if (!p.left && !here.has(p.id)) {
+          p.left = true;
           p.mesh.visible = false;
-          say(`${p.name} left the game.`, "bad");
-          p.out = true;
+          if (!p.finished) {
+            p.out = true;
+            say(`${p.name} left the game.`, "bad");
+          }
           renderPlayers();
           checkAllDone();
         }
@@ -796,14 +924,7 @@ Hub.register({
       if (iAmHost && !inGame) {
         const n = Math.min(list.length, MAX_ONLINE);
         const startBtn = el("button", "", n > 1 ? `Start (${n} players)` : "Start (just you)");
-        startBtn.onclick = () => {
-          const roster = list.slice(0, MAX_ONLINE);
-          const nums = randomNumbers(roster.length);
-          const data = { t: "start", safe: randomSafe(), roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i] })) };
-          room.send(data);
-          room.update({ inGame: true });
-          startMatch(data.safe, data.roster);
-        };
+        startBtn.onclick = () => hostStart(list);
         card.append(startBtn);
       }
       const leave = el("button", "alt", "Leave room");
@@ -813,8 +934,10 @@ Hub.register({
     }
 
     // ---------- main loop ----------
-    const camPos = new THREE.Vector3(0, 3.6, 4.4);
-    const camLook = new THREE.Vector3(0, 0.6, -6.6);
+    // camera sits higher above the player than behind them
+    const CAM_UP = 5.6, CAM_BACK = 4.2, LOOK_AHEAD = 3.2;
+    const camPos = new THREE.Vector3(0, CAM_UP, -1.4 + CAM_BACK);
+    const camLook = new THREE.Vector3(0, 0.4, -1.4 - LOOK_AHEAD);
     let followY = 0;
 
     function cameraTarget() {
@@ -878,9 +1001,9 @@ Hub.register({
       const focus = t ? t.mesh.position : new THREE.Vector3(0, 0, -1.4);
       const falling = t && t.out;
       if (!falling) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
-      const camGoal = new THREE.Vector3(focus.x * 0.6, followY + 3.6, (falling ? camPos.z : focus.z + 5.8));
+      const camGoal = new THREE.Vector3(focus.x * 0.6, followY + CAM_UP, (falling ? camPos.z : focus.z + CAM_BACK));
       camPos.lerp(camGoal, Math.min(1, dt * 4));
-      const lookGoal = falling ? focus : new THREE.Vector3(focus.x * 0.5, followY + 0.6, focus.z - 5);
+      const lookGoal = falling ? focus : new THREE.Vector3(focus.x * 0.5, followY + 0.4, focus.z - LOOK_AHEAD);
       camLook.lerp(lookGoal, Math.min(1, dt * (falling ? 2.5 : 5)));
       camera.position.copy(camPos);
       camera.lookAt(camLook);
