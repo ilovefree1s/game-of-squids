@@ -41,4 +41,10 @@ minigames/
 |------|--------|--------|
 | Snake | Player 1 | playable |
 | Reaction Time | Player 2 | playable |
-| Glass Bridge | ilovefree1s | playable |
+| Glass Bridge (3D) | ilovefree1s | playable |
+
+## 3D
+
+3D games use [three.js](https://threejs.org) (r149), included at `shared/lib/three.min.js`
+so the game works offline with no install. It's loaded in `index.html` before the games,
+so any mini-game can use the global `THREE`.
