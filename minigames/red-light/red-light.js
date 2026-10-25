@@ -649,7 +649,7 @@ Hub.register({
       if (p === "sing") {
         chant = data || makeChant();
         sungUpTo = -1;
-        chantEl.hidden = false;
+        // (no subtitles: in the show you only hear her, so you can't see how close she is to turning)
         koSpans.forEach((s) => s.classList.remove("on"));
         roSpans.forEach((s) => s.classList.remove("on"));
       }
@@ -971,8 +971,14 @@ Hub.register({
       p.hitT -= dt;
     }
 
-    // sprint: double-tap a direction and hold it (keyboard, stick or phone joystick)
+    // sprint: double-tap a direction and hold it (keyboard, stick or phone joystick), or hold Shift on a keyboard
     const tap = { held: false, downAt: -9, upAt: -9, dir: null, sprint: false };
+    let shiftHeld = false;
+    const onShift = (e) => { if (e.key === "Shift") shiftHeld = e.type === "keydown"; };
+    const offShift = () => (shiftHeld = false);
+    document.addEventListener("keydown", onShift);
+    document.addEventListener("keyup", onShift);
+    window.addEventListener("blur", offShift);
     function readMove() {
       const mv = input.move();
       const len = Math.hypot(mv.x, mv.y);
@@ -989,7 +995,7 @@ Hub.register({
         tap.sprint = false;
       }
       tap.held = held;
-      return { mv, len, sprint: tap.sprint && held };
+      return { mv, len, sprint: (tap.sprint || shiftHeld) && held };
     }
 
     const live = (p) => started && !done && countdown <= 0 && !p.out && !p.finished;
@@ -1235,6 +1241,7 @@ Hub.register({
     function hit(p) {
       if (p.dead) return;
       p.dead = true;
+      p.deadAt = time;
       hitSound();
       announce(`Player ${p.num}, eliminated.`);
       if (p.id === myId) {
@@ -1360,6 +1367,9 @@ Hub.register({
       bolts.forEach((b) => scene.remove(b.obj));
       bolts.length = 0;
       started = done = false;
+      wasSpectating = false;
+      camera.fov = 58;
+      camera.updateProjectionMatrix();
       phase = "idle";
       setEyes(false);
       setDoll(0, 0);
@@ -1384,7 +1394,7 @@ Hub.register({
       input.showTouch(true);
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move · PUSH to shove." : "WASD / arrows to move · F to push") + " · double-tap and hold to sprint" +
+      say((touch ? "Joystick to move · PUSH to shove · double-tap and hold to sprint." : "WASD / arrows to move · Shift to sprint · F to push") +
         "\nMove only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
@@ -1488,7 +1498,7 @@ Hub.register({
 
       card.append(soloCpus, dumRow, solo, el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: double-tap a direction and hold it. " +
+        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift, or double-tap a direction and hold it. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
@@ -1926,16 +1936,47 @@ Hub.register({
       });
       updateBolts(dt);
 
-      // camera: behind and above you, looking down the field at the doll
-      const focus = mine ? mine.mesh.position : new THREE.Vector3(0, 0, START_Z);
-      const camGoal = new THREE.Vector3(focus.x * 0.7, 4.6, focus.z + 7.5);
-      const lookGoal = new THREE.Vector3(focus.x * 0.4, 2.2, focus.z - 12);
+      // camera: behind and above you, looking down the field at the doll.
+      // Once you're dead (after a moment to see yourself fall), you watch the rest from the doll's eyes.
+      const spectating = mine && mine.dead && time - mine.deadAt > SPECTATE_AFTER && started && !done;
+      let camGoal, lookGoal;
+      if (spectating) {
+        camGoal = DOLL_EYES;
+        const alive = order.filter((q) => !q.out && !q.finished && !q.left && !q.dummy);
+        let spread = 0;
+        if (alive.length) { // look at the middle of everyone still playing
+          const c = new THREE.Vector3();
+          alive.forEach((q) => c.add(q.mesh.position));
+          lookGoal = c.divideScalar(alive.length).setY(1);
+          alive.forEach((q) => (spread = Math.max(spread, q.mesh.position.distanceTo(lookGoal))));
+        } else lookGoal = new THREE.Vector3(0, 1, (START_Z + FINISH_Z) / 2);
+        // zoom so the group fills the view (far away = zoomed in, like binoculars)
+        const dist = DOLL_EYES.distanceTo(lookGoal);
+        const fov = clamp(THREE.MathUtils.radToDeg(2 * Math.atan((3 + spread) / dist)), 6, 50);
+        camera.fov += (fov - camera.fov) * Math.min(1, dt * 2);
+        camera.updateProjectionMatrix();
+      } else {
+        const focus = mine ? mine.mesh.position : new THREE.Vector3(0, 0, START_Z);
+        camGoal = new THREE.Vector3(focus.x * 0.7, 4.6, focus.z + 7.5);
+        lookGoal = new THREE.Vector3(focus.x * 0.4, 2.2, focus.z - 12);
+      }
+      if (spectating !== wasSpectating) { // cut, don't swoop
+        wasSpectating = spectating;
+        camPos.copy(camGoal);
+        camLook.copy(lookGoal);
+        if (!spectating) { camera.fov = 58; camera.updateProjectionMatrix(); }
+        if (spectating) say("Watching from the doll's eyes", "");
+      }
       camPos.lerp(camGoal, Math.min(1, dt * 4));
-      camLook.lerp(lookGoal, Math.min(1, dt * 4));
+      camLook.lerp(lookGoal, Math.min(1, dt * 2.5));
       camera.position.copy(camPos);
       camera.lookAt(camLook);
       if (debugCam) { camera.position.set(...debugCam.pos); camera.lookAt(...debugCam.look); }
     }
+    let wasSpectating = false;
+    const SPECTATE_AFTER = 2.5; // seconds after you're shot
+    // just in front of her face, at eye height (she's DOLL_SIZE times her model size)
+    const DOLL_EYES = new THREE.Vector3(0, (9.85 + 0.12) * DOLL_SIZE, DOLL_Z + 2.4 * DOLL_SIZE);
     let debugCam = null; // testing only: a fixed camera
     let debugSteps = 1; // testing only: run the game faster than real time
 
@@ -1962,6 +2003,9 @@ Hub.register({
       try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
       window.removeEventListener("resize", resize);
       input.destroy();
+      document.removeEventListener("keydown", onShift);
+      document.removeEventListener("keyup", onShift);
+      window.removeEventListener("blur", offShift);
       leaveRoom();
       if (lobbyFeed) lobbyFeed.stop();
       if (faceRenderer) faceRenderer.dispose();
