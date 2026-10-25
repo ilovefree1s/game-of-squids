@@ -40,8 +40,6 @@ add a dated line under their heading below. Their Claude will mention it in chat
 
 ## Notes for Justin
 
-(none right now: Justin has seen them all, 2026-10-25)
-
 - 2026-10-25 (from Cougar): **Fixed a bug in `shared/models.js` (v0.22.1).** The lie-on-the-ground code from v0.20.0
   set every character's `c.root` height back to 0 whenever it wasn't lying down, so a character placed up high
   (Red Light's snipers on their ledge) dropped to the floor. Now it only adds and removes its own lowering, and leaves
