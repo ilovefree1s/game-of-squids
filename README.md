@@ -54,6 +54,19 @@ minigames/
 - **Bump the version** in `shared/version.js` with each change (shown bottom-right in the game),
   so you can both tell at a glance if you have the newest version.
 
+### Addendum (Cougar)
+
+- **Your own mini-game folder: merge it yourself.** No need to wait for the other person.
+  Nothing outside your folder uses those files, so it can't break their games.
+- **Shared files (`shared/`, `index.html`, the menu): merge it yourself too, but:**
+  - test that the other person's games still load first, and
+  - send them a one-line heads-up saying what changed (e.g. "models.js now has every animation, v0.8.0").
+- **Get the latest `main` right before you merge**, not just when you start. The other person
+  may have merged things in the meantime.
+- **Check the version number before bumping it.** If you both bump from the same number
+  (e.g. both go 0.7.1 → 0.8.0), the version stops telling you who's newest. Look at what's
+  currently in `main` and go one higher.
+
 ## Mini-games
 
 | Game | Author | Status |
