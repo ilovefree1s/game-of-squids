@@ -45,6 +45,8 @@ minigames/
 - **One branch per thing**, e.g. `whack-a-mole` or `fix-snake-speed`.
 - **Commit small, commit often**, with a clear message.
 - Push your branch → open a Pull Request → the other person merges.
+- **Bump the version** in `shared/version.js` with each change (shown bottom-right in the game),
+  so you can both tell at a glance if you have the newest version.
 
 ## Mini-games
 
