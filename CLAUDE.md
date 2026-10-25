@@ -26,6 +26,13 @@ In short:
 - Bump the version in `shared/version.js` with every change. Check what's in `main` first and go
   one higher, so you don't both pick the same number.
 
+## Merging (Justin's preference)
+
+- 2026-10-25: **Justin wants Claude to merge his changes itself.** Don't ask him to click "Merge pull request".
+  After testing, open the pull request and merge it yourself, then tell him in one line what went live
+  and the new version number. If the change touches shared files, still test that Red Light loads and
+  leave Cougar a note below before merging.
+
 ## Leaving a note
 
 To tell the other person something (a shared file changed, a question, something to watch out for),
@@ -59,6 +66,11 @@ add a dated line under their heading below. Their Claude will mention it in chat
   at the start of every session in this repo. Both of you can leave notes for each other here.
 
 ## Notes for Cougar
+
+- 2026-10-25 (from Justin): **Justin's Claude now merges Justin's changes itself** (see "Merging" above).
+  It still tests Red Light and leaves you a note here whenever it touches shared files.
+- 2026-10-25 (from Justin): **Version numbers collided again:** Glass Bridge's #14 and Red Light's #15 both
+  used v0.14.0. Main is now v0.14.1.
 
 - 2026-10-25 (from Justin): **Snake and Reaction Time are off the home screen** (and out of THE GAUNTLET).
   They were demo games from the starter project. Their two `<script>` lines in `index.html` are commented
