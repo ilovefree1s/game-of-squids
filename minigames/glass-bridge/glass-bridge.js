@@ -581,11 +581,36 @@ Hub.register({
       const b = decoded[list[h % list.length]];
       if (!(b instanceof AudioBuffer)) { loadSounds(); return; }
       const far = camera.position.distanceTo(p.mesh.position);
+      const level = Math.max(0.25, Math.min(1, 1.15 - far / 40));
+      // falling away: the pitch sags, it gets muffled and quieter, and echoes trail off down the pit
+      const t = a.currentTime, rate = 0.96 + (h % 9) / 100;
+      const len = b.duration / (rate * 0.8); // how long the scream lasts while it slows down
       const src = a.createBufferSource(); src.buffer = b;
-      src.playbackRate.value = 0.94 + (h % 13) / 100;
-      const g = a.createGain(); g.gain.value = Math.max(0.25, Math.min(1, 1.15 - far / 40));
-      src.connect(g).connect(a.destination);
-      src.start();
+      src.playbackRate.setValueAtTime(rate, t);
+      src.playbackRate.linearRampToValueAtTime(rate * 0.62, t + len);
+      const lp = a.createBiquadFilter(); lp.type = "lowpass";
+      lp.frequency.setValueAtTime(7000, t);
+      lp.frequency.exponentialRampToValueAtTime(700, t + len + 0.3);
+      const g = a.createGain();
+      g.gain.setValueAtTime(level, t);
+      g.gain.linearRampToValueAtTime(level * 0.55, t + len * 0.5);
+      g.gain.exponentialRampToValueAtTime(0.001, t + len + 0.2);
+      // echo: a short delay fed back into itself, each repeat darker and quieter
+      const delay = a.createDelay(1); delay.delayTime.value = 0.23;
+      const fb = a.createGain(); fb.gain.value = 0.6;
+      const dark = a.createBiquadFilter(); dark.type = "lowpass"; dark.frequency.value = 1400;
+      const wet = a.createGain();
+      wet.gain.setValueAtTime(0.55, t);
+      wet.gain.linearRampToValueAtTime(0.4, t + len);
+      wet.gain.exponentialRampToValueAtTime(0.001, t + len + 2.2);
+      src.connect(lp).connect(g);
+      g.connect(a.destination);
+      g.connect(delay);
+      delay.connect(dark).connect(fb).connect(delay);
+      dark.connect(wet).connect(a.destination);
+      src.start(t);
+      src.stop(t + len + 0.25);
+      setTimeout(() => { try { delay.disconnect(); fb.disconnect(); dark.disconnect(); wet.disconnect(); } catch {} }, (len + 2.6) * 1000);
     }
     function screamCheck(p) { // called every frame for every player
       const y = p.mesh.position.y;
@@ -1356,13 +1381,13 @@ Hub.register({
     }
     function botBrain(p, dt) {
       botDt = dt;
-      const ai = p.ai || (p.ai = { state: "think", wait: 0.6 + Math.random() * 1.6 });
+      const ai = p.ai || (p.ai = { state: "think", wait: 0.1 + Math.random() * 0.4 });
       if (p.out || p.finished || countdown > 0 || done) return NONE;
       const P = p.mesh.position;
       if (ai.state === "air") {
         if (p.onGround) { // landed: catch a breath
           ai.state = "think";
-          ai.wait = rules.show ? (isLeader(p) ? 1.5 + Math.random() * 4.5 : 0.4 + Math.random()) : 0.2 + Math.random() * 0.7;
+          ai.wait = rules.show ? (isLeader(p) ? 0.3 + Math.random() * 0.9 : 0.1 + Math.random() * 0.3) : 0.05 + Math.random() * 0.25;
           return NONE;
         }
         return { mv: steer(p, ai.tx, ai.tz, true), jump: false, push: false };
@@ -1372,11 +1397,21 @@ Hub.register({
         ai.wait -= dt;
         if (ai.wait > 0) return NONE;
         const next = rowOf(p) + 1;
-        if (next > maxRowFor(p)) { ai.wait = 0.3; return NONE; } // not my turn yet
+        if (next > maxRowFor(p)) { // not my turn yet: on the platform, wait near the front of it
+          ai.wait = 0.1;
+          if (!rules.show || rowOf(p) !== -1) return NONE;
+          const i = Math.max(0, lineAlive().indexOf(p) - 1);
+          const qx = [-2.4, -0.8, 0.8, 2.4][i % 4], qz = START.z0 + 2.2 + Math.floor(i / 4) * 1.4;
+          const d = Math.hypot(qx - P.x, qz - P.z);
+          if (d < 0.5) return NONE;
+          const s = steer(p, qx, qz, true);
+          ai.wait = 0;
+          return { mv: { x: 0, y: s.y * Math.min(1, d) }, jump: false, push: false };
+        }
         if (next >= STEPS) { ai.tx = 0; ai.tz = FINISH_Z + 1.2; } // the finish!
         else {
           const side = pickSide(next);
-          if (order.some((q) => q !== p && !q.out && tileKey(q) === next * 2 + side)) { ai.wait = 0.4; return NONE; } // taken
+          if (order.some((q) => q !== p && !q.out && tileKey(q) === next * 2 + side)) { ai.wait = 0.15; return NONE; } // taken
           ai.tx = laneX(side);
           ai.tz = rowZ(next);
         }
@@ -1399,7 +1434,7 @@ Hub.register({
           const s = steer(p, ai.rx, ai.rz, true);
           return { mv: { x: 0, y: s.y * Math.min(1, d * 1.2) }, jump: false, push: false };
         }
-        if (moving > 0.4) return NONE; // let it come to a stop first
+        if (moving > 0.8) return NONE; // let it slow down first
         ai.state = "aim";
       }
       if (ai.state === "aim") {
