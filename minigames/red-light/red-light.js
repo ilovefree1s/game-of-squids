@@ -737,7 +737,11 @@ Hub.register({
     }
 
     // Online, only the leader (the host) moves the doll from one phase to the next and tells everyone.
-    const leader = () => mode !== "online" || (room && roomPlayers.length > 0 && roomPlayers[0].id === room.id);
+    // If the host's tab gets hidden (the browser pauses it), the host hands the job to another player first.
+    let hostId = null; // during a match: who runs the doll (starts as the room's host)
+    const curHost = () => (started && !done && hostId && roomPlayers.some((q) => q.id === hostId) ? hostId
+      : roomPlayers.length ? roomPlayers[0].id : null);
+    const leader = () => mode !== "online" || (room && curHost() === room.id);
 
     function setPhase(p, len = 0, data = null) {
       phase = p;
@@ -1717,6 +1721,7 @@ Hub.register({
       if (loadingMatch) return;
       loadingMatch = true;
       matchId = id;
+      hostId = roomPlayers.length ? roomPlayers[0].id : null;
       lobby.innerHTML = "";
       const card = el("div", "rl-card");
       card.append(el("h2", "", "Loading…"));
@@ -1957,6 +1962,17 @@ Hub.register({
         });
         return;
       }
+      if (data.t === "host") { // the host's tab was hidden: someone else runs the doll now
+        hostId = data.id;
+        if (data.id === myId) {
+          phase = data.ph; phaseT = data.pt; phaseLen = data.len; clockLeft = data.clock;
+          if (data.chant) chant = data.chant;
+          if (typeof data.sung === "number") sungUpTo = data.sung;
+          order.forEach((q) => { if (q.cpu && q.target) q.mesh.position.copy(q.target); });
+          renderLight();
+        }
+        return;
+      }
       if (data.t === "results") { // the host's complete results (computer players played out)
         if (!done) endMatch(data.results);
         return;
@@ -2083,7 +2099,8 @@ Hub.register({
     function resultsList(rs) {
       const ul = el("ul", "rl-list");
       const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
-      rs.forEach((r) => {
+      const rank = (r) => (r.mine ? 0 : r.cpu ? 2 : 1);
+      [...rs].sort((a, b) => rank(a) - rank(b) || (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || (b.left || 0) - (a.left || 0) || b.distFt - a.distFt).forEach((r) => {
         const li = el("li", "rl-result");
         let how;
         if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
@@ -2323,7 +2340,9 @@ Hub.register({
           // weapons down while she sings; raised from the moment she starts to turn (and when time's up)
           sn.shotT = (sn.shotT || 0) - dt;
           const red = phase === "turn" || phase === "watch" || phase === "over" || sn.busy > 0;
-          if (sn.shotT <= 0) sn.kk.play(red ? "Ranged_2H_Aiming" : "Idle_A", { fade: 0.25 });
+          if (sn.shotT <= 0) { // (aiming plays once and holds: looping it re-raised the bow every 1½ s)
+            if (red) sn.kk.play("Ranged_2H_Aiming", { fade: 0.25, once: true }); else sn.kk.play("Idle_A", { fade: 0.25 });
+          }
           sn.kk.update(dt);
         }
       });
@@ -2465,6 +2484,16 @@ Hub.register({
     // for automated testing only: lets a test script read the game's state
     wrap.rlDebug = { get screams() { return lastScreams; }, set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
 
+    function onHidden() {
+      if (!document.hidden || mode !== "online" || !started || done || !leader()) return;
+      const inGame = (q) => q.id !== myId && order.some((o) => o.id === q.id && !o.cpu && !o.left);
+      const next = roomPlayers.find(inGame);
+      if (!next) return; // nobody else to hand it to
+      hostId = next.id;
+      send({ t: "host", id: next.id, ph: phase, pt: phaseT, len: phaseLen, clock: clockLeft, chant: phase === "sing" ? chant : null, sung: sungUpTo }, true);
+    }
+    document.addEventListener("visibilitychange", onHidden);
+
     showMenu();
     frame();
 
@@ -2476,6 +2505,7 @@ Hub.register({
       try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
       window.removeEventListener("resize", resize);
       input.destroy();
+      document.removeEventListener("visibilitychange", onHidden);
       document.removeEventListener("keydown", onShift);
       document.removeEventListener("keyup", onShift);
       window.removeEventListener("blur", offShift);
