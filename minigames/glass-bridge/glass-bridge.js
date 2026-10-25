@@ -169,6 +169,10 @@ Hub.register({
       .gb3-player.me { box-shadow: 0 0 0 2px var(--accent) inset; }
       .gb3-player.out { background: #2a2a34; color: #777; text-decoration: line-through; }
       .gb3-player.finished { background: #2f8f4e; }
+      .gb3-player.watchable { pointer-events: auto; cursor: pointer; }
+      .gb3-player.watchable:hover { filter: brightness(1.25); }
+      .gb3-player.watching { box-shadow: 0 0 0 2px #ffd23f inset; background: #2b5f9e; }
+      .gb3-player.watchable::before { content: "👁 "; }
       .gb3-timer { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 2px 8px #000; }
       .gb3-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
       .gb3-pushcd { font-size: .85rem; font-weight: 800; letter-spacing: .05em; text-shadow: 0 2px 6px #000;
@@ -592,8 +596,19 @@ Hub.register({
     ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, wakeAudio, { passive: true }));
 
     // ---------- HUD ----------
+    // when you're out (or across), click someone's number to watch from behind them
+    let watching = null;
+    const canWatch = (p) => !p.out && !p.finished && !p.left && p.mesh.visible;
+    function watchTarget() {
+      const m = me();
+      if (m && !m.out && !m.finished) return null; // you're still playing
+      return watching && canWatch(watching) ? watching : null;
+    }
     function renderPlayers() {
       playersEl.innerHTML = "";
+      const m = me();
+      const spectator = started && !done && (!m || m.out || m.finished);
+      if (!spectator) watching = null;
       const L = leader();
       const list = rules.show ? lineOrder() : order;
       list.forEach((p, i) => {
@@ -604,7 +619,15 @@ Hub.register({
         if (p === L) cls += " lead";
         let label = p.bot ? `🤖 ${p.num}` : mode === "online" ? `${p.num} ${p.name}` : p.num;
         if (rules.show) label = `${i + 1}. ${label}`;
-        playersEl.append(el("div", cls, p.finished ? "✓ " + label : label));
+        const watchable = spectator && p !== m && canWatch(p);
+        if (watchable) cls += " watchable";
+        if (watchable && p === watching) cls += " watching";
+        const chip = el("div", cls, p.finished ? "✓ " + label : label);
+        if (watchable) chip.addEventListener("click", () => {
+          watching = watching === p ? null : p; // click again to go back to the start view
+          renderPlayers();
+        });
+        playersEl.append(chip);
       });
     }
     let lastShown = null;
@@ -818,7 +841,8 @@ Hub.register({
       p.out = true;
       renderPlayers();
       tone(180, 0.6, 0.12, "sawtooth");
-      say(`${nameOf(p)} fell!`, "bad");
+      const tip = isMine(p) && !rules.freePlay && order.some((q) => q !== p && canWatch(q));
+      say(tip ? `${nameOf(p)} fell! Click a player's number at the top to watch them.` : `${nameOf(p)} fell!`, "bad");
       if (rules.freePlay) {
         // option: respawn right away, no waiting for anyone
         p.falls = (p.falls || 0) + 1;
@@ -1894,6 +1918,7 @@ Hub.register({
 
     const START_VIEW = new THREE.Vector3(0, 0, -1.4);
     let camHeld = false; // true while you're out: the camera waits at the start
+    let lastWatched = null, snapCam = false;
     const camHeading = 0; // the camera always looks down the bridge (drag to look around)
     let botSendT = 0;
 
@@ -1992,8 +2017,13 @@ Hub.register({
       }));
 
       // third-person camera. If you fall it jumps back to the start and stays there until you respawn.
-      const t = me();
+      const w = watchTarget();
+      const t = w || me();
       const dead = !t || t.out;
+      if (w !== lastWatched) { // switching who you watch: jump straight there
+        lastWatched = w;
+        if (w) { camHeld = false; followY = Math.max(0, w.mesh.position.y); snapCam = true; }
+      }
       const focus = dead ? START_VIEW : t.mesh.position;
       if (!dead) followY += (Math.max(0, focus.y) - followY) * Math.min(1, dt * 3);
       // look-around: while dragging, the camera swings around you; let go and it eases back
@@ -2010,7 +2040,11 @@ Hub.register({
       const camGoal = new THREE.Vector3(focus.x + sy * back, baseY + up, focus.z + cy * back);
       const lookGoal = new THREE.Vector3(focus.x - sy * LOOK_AHEAD, baseY + 0.4, focus.z - cy * LOOK_AHEAD);
       const k = look.dragging ? 12 : 4; // follow your finger/mouse closely while dragging
-      if (dead && !camHeld) { // snap straight back to the start, no swooping
+      if (snapCam) {
+        snapCam = false;
+        camPos.copy(camGoal);
+        camLook.copy(lookGoal);
+      } else if (dead && !camHeld) { // snap straight back to the start, no swooping
         camHeld = true;
         followY = 0;
         camPos.copy(camGoal);
