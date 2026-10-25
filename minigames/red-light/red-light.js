@@ -1432,7 +1432,7 @@ Hub.register({
       showSprintBtn(true);
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove." : "WASD / arrows to move · Shift to sprint · F to push") +
+      say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove · swipe to look around." : "WASD / arrows to move · Shift to sprint · F to push · drag to look around") +
         "\nMove only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
@@ -1548,7 +1548,7 @@ Hub.register({
 
       card.append(soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. " +
+        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
       putCard(card, "menu", keepTop);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
@@ -2036,8 +2036,19 @@ Hub.register({
         const focus = mine ? mine.mesh.position : new THREE.Vector3(0, 0, START_Z);
         // narrow (upright phone) screens: follow you straight on, a bit further back, so you stay in view
         const narrow = camera.aspect < 1;
-        camGoal = narrow ? new THREE.Vector3(focus.x, 5.4, focus.z + 9.5) : new THREE.Vector3(focus.x * 0.7, 4.6, focus.z + 7.5);
-        lookGoal = narrow ? new THREE.Vector3(focus.x, 1.6, focus.z - 10) : new THREE.Vector3(focus.x * 0.4, 2.2, focus.z - 12);
+        const UP = narrow ? 5.4 : 4.6, BACK = narrow ? 9.5 : 7.5, AHEAD = narrow ? 10 : 12, LOOK_Y = narrow ? 1.6 : 2.2;
+        const cx = narrow ? focus.x : focus.x * 0.7, lx = narrow ? focus.x : focus.x * 0.4;
+        // look-around (same as Glass Bridge): while dragging, the camera swings around you; let go and it eases back
+        if (!look.dragging) {
+          look.yaw += (0 - look.yaw) * Math.min(1, dt * 5);
+          look.pitch += (0 - look.pitch) * Math.min(1, dt * 5);
+        }
+        const elev = clamp(Math.atan2(UP, BACK) + look.pitch, 0.2, 1.35);
+        const dist = Math.hypot(UP, BACK);
+        const back = dist * Math.cos(elev), up = dist * Math.sin(elev);
+        const sy = Math.sin(look.yaw), cy = Math.cos(look.yaw);
+        camGoal = new THREE.Vector3(cx + sy * back, up, focus.z + cy * back);
+        lookGoal = new THREE.Vector3(lx - sy * AHEAD, LOOK_Y, focus.z - cy * AHEAD);
       }
       if (spectating !== wasSpectating) { // cut, don't swoop
         wasSpectating = spectating;
@@ -2046,13 +2057,40 @@ Hub.register({
         if (!spectating) { camera.fov = 58; camera.updateProjectionMatrix(); }
         if (spectating) say("Watching from the doll's eyes", "");
       }
-      camPos.lerp(camGoal, Math.min(1, dt * 4));
-      camLook.lerp(lookGoal, Math.min(1, dt * 2.5));
+      const k = look.dragging && !spectating ? 12 : 4; // follow your finger/mouse closely while dragging
+      camPos.lerp(camGoal, Math.min(1, dt * k));
+      camLook.lerp(lookGoal, Math.min(1, dt * (spectating ? 2.5 : k + 1)));
       camera.position.copy(camPos);
       camera.lookAt(camLook);
       if (debugCam) { camera.position.set(...debugCam.pos); camera.lookAt(...debugCam.look); }
     }
     let wasSpectating = false;
+    // Look around: hold the mouse button and drag, or swipe the game view on a phone (same as Glass Bridge).
+    // Let go and the camera eases back behind you. Moving still goes toward the doll, whichever way you look.
+    const look = { yaw: 0, pitch: 0, dragging: false, id: null, x: 0, y: 0 };
+    const view = renderer.domElement;
+    view.addEventListener("pointerdown", (e) => {
+      if (look.dragging) return;
+      look.dragging = true;
+      look.id = e.pointerId;
+      look.x = e.clientX;
+      look.y = e.clientY;
+      try { view.setPointerCapture(e.pointerId); } catch {}
+    });
+    view.addEventListener("pointermove", (e) => {
+      if (!look.dragging || e.pointerId !== look.id) return;
+      const w = view.clientWidth || 800;
+      look.yaw -= ((e.clientX - look.x) / w) * Math.PI * 1.6; // a full-width swipe turns you ~290°
+      look.pitch += ((e.clientY - look.y) / w) * 2.2;
+      look.yaw = clamp(look.yaw, -Math.PI, Math.PI); // up to looking straight behind you
+      look.pitch = clamp(look.pitch, -0.6, 0.5);
+      look.x = e.clientX;
+      look.y = e.clientY;
+    });
+    const endLook = (e) => { if (e.pointerId === look.id) { look.dragging = false; look.id = null; } };
+    view.addEventListener("pointerup", endLook);
+    view.addEventListener("pointercancel", endLook);
+    view.addEventListener("lostpointercapture", endLook);
     const SPECTATE_AFTER = 2.5; // seconds after you're shot
     // just in front of her face, at eye height (she's DOLL_SIZE times her model size)
     const DOLL_EYES = new THREE.Vector3(0, (9.85 + 0.12) * DOLL_SIZE, DOLL_Z + 2.4 * DOLL_SIZE);
