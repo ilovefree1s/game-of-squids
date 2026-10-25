@@ -64,7 +64,6 @@ Hub.register({
     const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
     const SEND_EVERY = 0.1; // online: seconds between position updates
     const PUSH_ENABLED = true; // the PUSH button (F / X□ / phone PUSH)
-    const TURN_SPEED = 2.8; // how fast left / right turns you (radians per second)
     const SHOW_JUMP_TIME = 10; // show rules: seconds the front player gets for each jump
     const MAX_BOTS = 12;
     const ARCHER_CHARS = ["skeleton-rogue", "skeleton-warrior"];
@@ -79,7 +78,7 @@ Hub.register({
     const laneX = (side) => (side === 0 ? -LANE_X : LANE_X); // 0 = left, 1 = right
     const lastZ = rowZ(STEPS - 1);
     const FINISH_Z = lastZ - PANEL / 2 - 1.2 - 2.5; // center of finish platform
-    const START = { x0: -3, x1: 3, z0: -2.3, z1: 1.7 };
+    const START = { x0: -4.5, x1: 4.5, z0: -2.3, z1: 5.7 }; // start platform: 9 wide, 8 deep
     const FINISH = { x0: -3, x1: 3, z0: FINISH_Z - 2.5, z1: FINISH_Z + 2.5 };
 
     // ---------- state ----------
@@ -289,15 +288,15 @@ Hub.register({
       color: 0xbfefff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.3,
     });
 
-    const startPlat = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 4), platformMat);
-    startPlat.position.set(0, -0.25, -0.3);
+    const startPlat = new THREE.Mesh(new THREE.BoxGeometry(START.x1 - START.x0, 0.5, START.z1 - START.z0), platformMat);
+    startPlat.position.set(0, -0.25, (START.z0 + START.z1) / 2);
     scene.add(startPlat);
     const finishPlat = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 5), finishMat);
     finishPlat.position.set(0, -0.25, FINISH_Z);
     scene.add(finishPlat);
     // low walls behind the start and past the finish
     for (const z of [START.z1 + 0.1, FINISH.z0 - 0.1]) {
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 0.2), metal);
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(z > 0 ? START.x1 - START.x0 : 6, 1, 0.2), metal);
       wall.position.set(0, 0.5, z);
       scene.add(wall);
     }
@@ -584,7 +583,7 @@ Hub.register({
     }
 
     // ---------- match ----------
-    const spawnSpot = (k) => new THREE.Vector3(-2.3 + (k % 5) * 1.15, 0, -1.7 + Math.floor(k / 5) * 0.95);
+    const spawnSpot = (k) => new THREE.Vector3(-3.5 + (k % 6) * 1.4, 0, -1.5 + Math.floor(k / 6) * 1.4);
     const classicSolo = () => mode === "solo" && !order.some((q) => q.bot) && !rules.show; // 3 players, one at a time
 
     // ---------- the line (show rules) ----------
@@ -1010,10 +1009,18 @@ Hub.register({
       if (ctrl.push && PUSH_ENABLED && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
 
-      // your character's point of view: left / right turn you, forward / back move the way you face
-      if (live) p.mesh.rotation.y -= mv.x * TURN_SPEED * dt;
-      const fwd = mv.y >= 0 ? mv.y : mv.y * 0.6; // backing up is a bit slower
-      const dirX = -Math.sin(p.mesh.rotation.y), dirZ = -Math.cos(p.mesh.rotation.y);
+      // players: forward on the stick is always toward the bridge, and your character turns to face
+      // the way you're walking. (Bots steer themselves and just walk the way they face.)
+      let fwd, dirX, dirZ;
+      if (p.bot) {
+        fwd = mv.y;
+        dirX = -Math.sin(p.mesh.rotation.y); dirZ = -Math.cos(p.mesh.rotation.y);
+      } else {
+        const len = Math.hypot(mv.x, mv.y);
+        fwd = Math.min(1, len);
+        dirX = len > 0.01 ? mv.x / len : 0; dirZ = len > 0.01 ? -mv.y / len : 0;
+        if (live && len > 0.1) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, faceAngle(dirX, dirZ), Math.min(1, dt * 12));
+      }
 
       if (wantJump && p.onGround) {
         const from = supportAt(P.x, P.z);
@@ -1249,11 +1256,15 @@ Hub.register({
     // It picks a side it knows is safe (stepped on / the other one broke), otherwise it guesses.
     const NONE = { mv: { x: 0, y: 0 }, jump: false, push: false };
     const faceAngle = (dx, dz) => Math.atan2(-dx, -dz);
+    // Bots don't need a joystick to turn: they swing straight round to face their target, and only
+    // walk forward once they're lined up (so they never circle a spot or jump at an angle).
+    let botDt = 0;
     function steer(p, tx, tz, go) {
       const P = p.mesh.position;
       const want = faceAngle(tx - P.x, tz - P.z);
-      const diff = Math.atan2(Math.sin(want - p.mesh.rotation.y), Math.cos(want - p.mesh.rotation.y));
-      return { x: Math.max(-1, Math.min(1, -diff * 3)), y: go && Math.abs(diff) < 0.5 ? 1 : 0 };
+      p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, want, Math.min(1, botDt * 12));
+      const diff = Math.abs(Math.atan2(Math.sin(want - p.mesh.rotation.y), Math.cos(want - p.mesh.rotation.y)));
+      return { x: 0, y: go && diff < 0.15 ? 1 : 0, off: diff };
     }
     function tileKey(q) {
       const s = supportAt(q.mesh.position.x, q.mesh.position.z);
@@ -1268,6 +1279,7 @@ Hub.register({
       return Math.random() < 0.5 ? 0 : 1; // nobody knows: guess
     }
     function botBrain(p, dt) {
+      botDt = dt;
       const ai = p.ai || (p.ai = { state: "think", wait: 0.6 + Math.random() * 1.6 });
       if (p.out || p.finished || countdown > 0 || done) return NONE;
       const P = p.mesh.position;
@@ -1306,16 +1318,18 @@ Hub.register({
       if (ai.t > 6) { ai.state = "think"; ai.wait = 0.2; return NONE; } // stuck: start over
       if (ai.state === "runup") {
         const d = Math.hypot(ai.rx - P.x, ai.rz - P.z);
-        if (d > 0.22) {
+        const moving = Math.hypot(p.vel.x, p.vel.z);
+        if (d > 0.3) { // walk there, slowing down as it gets close
           const s = steer(p, ai.rx, ai.rz, true);
-          return { mv: { x: s.x, y: s.y * Math.min(1, d * 1.5) }, jump: false, push: false };
+          return { mv: { x: 0, y: s.y * Math.min(1, d * 1.2) }, jump: false, push: false };
         }
+        if (moving > 0.4) return NONE; // let it come to a stop first
         ai.state = "aim";
       }
       if (ai.state === "aim") {
         const s = steer(p, ai.tx, ai.tz, false);
-        if (Math.abs(s.x) < 0.12) ai.state = "go";
-        return { mv: { x: s.x, y: 0 }, jump: false, push: false };
+        if (s.off < 0.03) ai.state = "go";
+        return NONE;
       }
       // "go": run at it and jump near the edge (or once it's in reach)
       const s = steer(p, ai.tx, ai.tz, true);
@@ -1834,7 +1848,7 @@ Hub.register({
 
     const START_VIEW = new THREE.Vector3(0, 0, -1.4);
     let camHeld = false; // true while you're out: the camera waits at the start
-    let camHeading = 0; // the camera follows the way your character faces
+    const camHeading = 0; // the camera always looks down the bridge (drag to look around)
     let botSendT = 0;
 
     // Look around: hold the mouse button and drag, or swipe the game view on a phone.
@@ -1944,8 +1958,6 @@ Hub.register({
       const elev = Math.max(0.2, Math.min(1.35, Math.atan2(CAM_UP, CAM_BACK) + look.pitch));
       const dist = Math.hypot(CAM_UP, CAM_BACK);
       const back = dist * Math.cos(elev), up = dist * Math.sin(elev);
-      if (dead) camHeading = 0; // waiting at the start: face the bridge
-      else camHeading = lerpAngle(camHeading, t.mesh.rotation.y, Math.min(1, dt * 6));
       const yaw = camHeading + look.yaw;
       const sy = Math.sin(yaw), cy = Math.cos(yaw);
       const camGoal = new THREE.Vector3(focus.x + sy * back, baseY + up, focus.z + cy * back);
