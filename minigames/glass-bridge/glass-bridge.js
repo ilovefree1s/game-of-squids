@@ -1120,7 +1120,7 @@ Hub.register({
       const live = !p.out && countdown <= 0 && !done;
       const mv = live ? ctrl.mv : { x: 0, y: 0 };
       const wantJump = ctrl.jump && live;
-      if (ctrl.push && PUSH_ENABLED && !rules.show && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
+      if (ctrl.push && PUSH_ENABLED && !rules.show && !p.finished && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
 
       // players: forward on the stick is always toward the bridge, and your character turns to face
@@ -1207,6 +1207,12 @@ Hub.register({
       }
 
       if (rules.bump && !p.out) bumpOthers(p);
+      // made it across: keep clear of the edge so the landing spot stays open for everyone else
+      const FINISH_KEEP = 2.2;
+      if (p.finished && p.onGround && P.z > FINISH.z1 - FINISH_KEEP) {
+        P.z = Math.max(FINISH.z1 - FINISH_KEEP, P.z - 3 * dt);
+        if (p.vel.z > 0) p.vel.z = 0;
+      }
 
       const speed = Math.hypot(p.vel.x, p.vel.z);
       animate(p, speed, !p.onGround, dt);
@@ -1232,8 +1238,9 @@ Hub.register({
     const BODY = 0.75; // how close two players can get
     function bumpOthers(p) {
       const P = p.mesh.position;
+      if (p.finished) return; // made it across: you're a ghost to everyone, so you can't block the finish
       for (const q of order) {
-        if (q === p || q.out || q.left || !q.mesh.visible) continue;
+        if (q === p || q.out || q.left || q.finished || !q.mesh.visible) continue;
         const Q = q.mesh.position;
         if (Math.abs(Q.y - P.y) > 1.2) continue;
         const dx = P.x - Q.x, dz = P.z - Q.z;
