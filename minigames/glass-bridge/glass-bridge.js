@@ -78,7 +78,7 @@ Hub.register({
     const laneX = (side) => (side === 0 ? -LANE_X : LANE_X); // 0 = left, 1 = right
     const lastZ = rowZ(STEPS - 1);
     const FINISH_Z = lastZ - PANEL / 2 - 1.2 - 2.5; // center of finish platform
-    const START = { x0: -4.5, x1: 4.5, z0: -2.3, z1: 5.7 }; // start platform: 9 wide, 8 deep
+    const START = { x0: -8, x1: 8, z0: -2.3, z1: 11.7 }; // start platform: 16 wide, 14 deep
     const FINISH = { x0: -3, x1: 3, z0: FINISH_Z - 2.5, z1: FINISH_Z + 2.5 };
 
     // ---------- state ----------
@@ -550,7 +550,46 @@ Hub.register({
       o.connect(gain).connect(a.destination);
       o.start(); o.stop(a.currentTime + dur);
     }
-    ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, audio, { passive: true }));
+    // recorded screams (minigames/glass-bridge/sounds/, credits in sounds/CREDITS.txt)
+    const SOUND_DIR = "minigames/glass-bridge/sounds/";
+    const SCREAMS = {
+      m: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `scream_m${i}.mp3`),
+      f: [1, 2, 3, 4].map((i) => `scream_f${i}.mp3`),
+    };
+    const FEMALE_CHARS = new Set(["rogue", "rogue-hooded", "skeleton-rogue"]);
+    const decoded = {};
+    function loadSounds() {
+      const a = actx;
+      if (!a || location.protocol === "file:") return;
+      [...SCREAMS.m, ...SCREAMS.f].forEach((f) => {
+        if (decoded[f]) return;
+        decoded[f] = fetch(SOUND_DIR + f).then((r) => r.arrayBuffer())
+          .then((buf) => new Promise((ok, no) => a.decodeAudioData(buf, ok, no)))
+          .then((b) => (decoded[f] = b)).catch(() => delete decoded[f]);
+      });
+    }
+    // someone falls: they scream (same voice on every screen, quieter the further away they are)
+    function scream(p) {
+      const a = audio(); if (!a) return;
+      const list = FEMALE_CHARS.has(p.char) ? SCREAMS.f : SCREAMS.m;
+      let h = 7;
+      for (const c of String(p.id) + ":" + (p.falls || 0)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      const b = decoded[list[h % list.length]];
+      if (!(b instanceof AudioBuffer)) { loadSounds(); return; }
+      const far = camera.position.distanceTo(p.mesh.position);
+      const src = a.createBufferSource(); src.buffer = b;
+      src.playbackRate.value = 0.94 + (h % 13) / 100;
+      const g = a.createGain(); g.gain.value = Math.max(0.25, Math.min(1, 1.15 - far / 40));
+      src.connect(g).connect(a.destination);
+      src.start();
+    }
+    function screamCheck(p) { // called every frame for every player
+      const y = p.mesh.position.y;
+      if (y > -0.2) p.screamed = false; // back on something solid (or respawned)
+      else if (!p.screamed && y < -0.9 && p.mesh.visible) { p.screamed = true; scream(p); }
+    }
+    const wakeAudio = () => { audio(); loadSounds(); };
+    ["pointerdown", "keydown", "touchstart"].forEach((ev) => wrap.addEventListener(ev, wakeAudio, { passive: true }));
 
     // ---------- HUD ----------
     function renderPlayers() {
@@ -583,7 +622,7 @@ Hub.register({
     }
 
     // ---------- match ----------
-    const spawnSpot = (k) => new THREE.Vector3(-3.5 + (k % 6) * 1.4, 0, -1.5 + Math.floor(k / 6) * 1.4);
+    const spawnSpot = (k) => new THREE.Vector3(-5.6 + (k % 8) * 1.6, 0, -1.2 + Math.floor(k / 8) * 1.6);
     const classicSolo = () => mode === "solo" && !order.some((q) => q.bot) && !rules.show; // 3 players, one at a time
 
     // ---------- the line (show rules) ----------
@@ -708,9 +747,10 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick: up = forward, left / right = turn. JUMP, PUSH. Swipe the screen to look around."
-        : "W / ↑ forward · A D / ← → turn · Space jump · F push · drag the mouse to look around") +
-        (rules.show ? "\nShow rules: wait for your turn in line. 10 seconds per jump, or the archers shoot." : "") +
+      const pushHelp = !rules.show;
+      say((touch ? `Joystick: up = toward the bridge. JUMP${pushHelp ? ", PUSH" : ""}. Swipe the screen to look around.`
+        : `WASD / arrows move (W = toward the bridge) · Space jump${pushHelp ? " · F push" : ""} · drag the mouse to look around`) +
+        (rules.show ? "\nShow rules: wait for your turn in line. 10 seconds per jump, or the archers shoot. No pushing." : "") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -1006,7 +1046,7 @@ Hub.register({
       const live = !p.out && countdown <= 0 && !done;
       const mv = live ? ctrl.mv : { x: 0, y: 0 };
       const wantJump = ctrl.jump && live;
-      if (ctrl.push && PUSH_ENABLED && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
+      if (ctrl.push && PUSH_ENABLED && !rules.show && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
 
       // players: forward on the stick is always toward the bridge, and your character turns to face
@@ -1025,6 +1065,7 @@ Hub.register({
       if (wantJump && p.onGround) {
         const from = supportAt(P.x, P.z);
         p.jumpFrom = from && from.kind === "panel" ? from.row * 2 + from.side : null; // which glass tile (or none)
+        p.noBack = !!(from && from.kind === "panel"); // jumping off the glass: forward or sideways only
         p.vel.y = JUMP_V;
         p.onGround = false;
         p.jumped = true;
@@ -1049,6 +1090,7 @@ Hub.register({
         p.vel.z += (dirZ * fwd * SPEED - p.vel.z) * k;
         p.vel.y -= GRAVITY * h;
         if (p.noForward && !p.onGround && p.vel.z < 0) p.vel.z = 0; // can't jump past the player ahead
+        if (p.noBack && !p.onGround && p.vel.z > 0) p.vel.z = 0; // can't jump back toward the start
 
         const prevY = P.y;
         P.addScaledVector(p.vel, h);
@@ -1073,6 +1115,7 @@ Hub.register({
           if (!wasGround) {
             p.jumped = false;
             p.noForward = false;
+            p.noBack = false;
             p.landedAt = time;
             p.vel.x *= 0.35; // "sticky" landings so you don't slide off a small panel
             p.vel.z *= 0.35;
@@ -1178,9 +1221,12 @@ Hub.register({
       hits.forEach((h) => { const q = order.find((o) => o.id === h.to); if (q && q.bot && local(q)) getPushed(q, h.x, h.z); });
     }
     let lastCdText = null;
+    const pushBtnEl = wrap.querySelector(".inp-push");
     function updatePushCooldown() {
       const m = me();
-      if (!PUSH_ENABLED || !started || done || !m || m.out) {
+      const pushOn = PUSH_ENABLED && !rules.show; // no pushing in show mode
+      if (pushBtnEl) pushBtnEl.style.visibility = pushOn ? "" : "hidden";
+      if (!pushOn || !started || done || !m || m.out) {
         if (lastCdText !== "") { pushCdEl.textContent = ""; lastCdText = ""; }
         return;
       }
@@ -1243,7 +1289,7 @@ Hub.register({
       if (q && !q.out && !q.finished) q.slide = { x: x / 0.25, z: z / 0.25, t: 0.25 };
     }
     function getPushed(m, x, z) {
-      if (!m || m.out || m.finished) return;
+      if (!m || m.out || m.finished || rules.show) return;
       m.vel.x += x;
       m.vel.z += z;
       m.vel.y = Math.max(m.vel.y, 4.5); // knocked off your feet
@@ -1906,6 +1952,7 @@ Hub.register({
         else if (mode === "online") stepRemote(p, dt);
         else if (p.out) { /* solo: fallen players keep falling */ p.vel.y -= GRAVITY * dt; p.mesh.position.addScaledVector(p.vel, dt); animate(p, 0, true, dt); if (p.mesh.position.y < -55) p.mesh.visible = false; }
         else stepIdle(p, dt);
+        screamCheck(p);
       }
 
       updateEffects(dt);

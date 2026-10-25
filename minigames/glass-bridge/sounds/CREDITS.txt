@@ -1,0 +1,13 @@
+Sound files used by Glass Bridge (copied from Red Light's sounds folder; everything else is made in code)
+
+scream_m0.mp3 - scream_m7.mp3 (a player falling through the glass or knocked off by an archer)
+  From "aargh male screams" by congusbongus on OpenGameArt.org, license CC-BY 3.0.
+  https://opengameart.org/content/aargh-male-screams
+  The pack combines "Helmut Scream" (CC-BY 3.0), "Male_Thijs_loud_scream" (CC-BY 3.0) and
+  "human male scream multi" (CC0). Converted from .ogg to .mp3 so every browser can play them.
+
+scream_f1.mp3 - scream_f4.mp3 (female screams, for the Rogue, Hooded Rogue and Skeleton Rogue)
+  From "female screams" by congusbongus on OpenGameArt.org (page license: CC-BY 3.0; the pack mixes
+  CC-BY and CC0 sounds, see license.txt in female_screams.zip for each original author).
+  https://opengameart.org/content/female-screams
+  Converted from .ogg to .mp3 so every browser can play them.
