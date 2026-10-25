@@ -100,3 +100,23 @@ main { padding: 0 24px 24px; }
   pointer-events: none;
   z-index: 10;
 }
+
+/* top-right buttons */
+.top-buttons { display: flex; gap: 8px; }
+#fs { background: #3a3a55; color: var(--text); }
+
+/* full screen: the game fills the screen */
+body.gos-fs { overflow: hidden; }
+body.gos-fs header { position: fixed; top: 8px; right: 8px; padding: 0; z-index: 60; }
+body.gos-fs #title, body.gos-fs #version { display: none; }
+body.gos-fs #back { display: none; }
+body.gos-fs main { padding: 0; }
+body.gos-fs #stage { position: fixed; inset: 0; z-index: 50; background: var(--bg);
+                     display: flex; flex-direction: column; padding: 6px; }
+body.gos-fs #hud { margin: 0 0 4px; padding: 4px 190px 4px 8px; }
+body.gos-fs #game { flex: 1; min-height: 0; border-radius: 8px; }
+@media (max-width: 600px) {
+  .top-buttons { flex-direction: row-reverse; }
+  #fs { padding: 8px 10px; }
+  body.gos-fs #hud { padding-right: 150px; font-size: .9rem; }
+}
