@@ -99,6 +99,8 @@ Hub.register({
     let clockLeft = 0;
     let elapsed = 0; // seconds since GO
     let finishCount = 0;
+    const FINISH_GRACE = 60; // after someone wins, everyone else gets this many seconds to cross
+    let finishWindow = 0;
 
     // ---------- game options ----------
     const DEFAULT_OPTS = { time: 120, showSafe: true, bump: true, freePlay: false, show: false, bots: 0 };
@@ -645,11 +647,12 @@ Hub.register({
     let lastShown = null;
     function renderTimer() {
       // with a time limit: counts down; without: counts up
-      const s = !started ? "" : rules.time ? String(Math.max(0, Math.ceil(clockLeft))) : clockText(elapsed);
+      const s = !started ? "" : finishWindow > 0 ? `${Math.ceil(finishWindow)} to finish`
+        : rules.time ? String(Math.max(0, Math.ceil(clockLeft))) : clockText(elapsed);
       if (s === lastShown) return;
       lastShown = s;
       timerEl.textContent = started ? `⏱ ${s}` : "";
-      timerEl.classList.toggle("low", started && !!rules.time && clockLeft <= 15);
+      timerEl.classList.toggle("low", started && (finishWindow > 0 ? finishWindow <= 15 : !!rules.time && clockLeft <= 15));
     }
     function say(text, kind = "") {
       msg.textContent = text;
@@ -774,6 +777,7 @@ Hub.register({
       if (rules.show) rules.freePlay = false; // show rules: one life per round
       elapsed = 0;
       finishCount = 0;
+      finishWindow = 0;
       matchId = id;
       safe = safeArr;
       order = roster.map(addPlayer);
@@ -899,15 +903,32 @@ Hub.register({
         : `${nameOf(p)} made it across! (${clockText(p.finishTime)})`, "good");
       if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
       if (mode === "online" && local(p)) sendFor(p, { t: "finish" });
-      // first one across wins: the round ends right away
-      if (p.rank === 1) later(endMatch, mode === "online" ? 1800 : 0);
+      if (classicSolo()) { if (p.rank === 1) later(endMatch, 0); return; } // (one of your own players made it)
+      // first one across wins, but everyone else still gets to finish (or fall)
+      const stillGoing = order.some((q) => !q.finished && !q.out && !q.left);
+      if (p.rank === 1 && stillGoing) {
+        finishWindow = FINISH_GRACE;
+        const msg = mode === "online" ? `🏆 ${nameOf(p)} ${isMine(p) ? "win" : "wins"}!` : `🏆 ${nameOf(p)} made it across first!`;
+        say(`${msg} Everyone else has ${FINISH_GRACE} seconds to cross.` +
+          (isMine(p) ? " Click a player's number at the top to watch them." : ""), "good");
+      } else if (isMine(p) && stillGoing) {
+        say(`${nameOf(p)} made it across (${ordinal(p.rank)})! Click a player's number at the top to watch them.`, "good");
+      }
+      checkAllDone();
     }
 
-    // The first player across wins (see finish). Here: if EVERYONE has fallen (and it isn't
-    // free play, where you respawn on your own), everyone respawns. Broken glass stays broken.
+    // The first player across wins (see finish), but the round keeps going until everyone else has
+    // crossed or fallen (or the 60 seconds after the win run out).
+    // Before anyone wins: if EVERYONE has fallen (and it isn't free play, where you respawn on your
+    // own), everyone respawns. Broken glass stays broken.
     function checkAllDone() {
-      if (done || respawnPending || !order.length || rules.freePlay) return;
-      if (order.some((p) => p.finished)) return; // already won; the round is ending
+      if (done || respawnPending || !order.length) return;
+      if (order.some((p) => p.finished)) {
+        const over = order.every((p) => p.finished || p.left || (p.out && !rules.freePlay));
+        if (over) later(endMatch, mode === "online" ? 1500 : 800);
+        return;
+      }
+      if (rules.freePlay) return;
       if (!order.every((p) => p.out || p.left)) return;
       if (order.every((p) => p.left)) return later(endMatch, 1500);
       respawnPending = true;
@@ -976,7 +997,11 @@ Hub.register({
         const timeBonus = rules.time ? Math.max(0, Math.ceil(clockLeft)) : 0;
         const winner = order.find((q) => q.rank === 1);
         if (winner && winner.bot) {
-          say(`🏆 ${winner.name} wins!`, "bad");
+          const m = me();
+          if (m && m.finished) {
+            api.addScore(60 + timeBonus);
+            say(`🏆 ${winner.name} wins! You made it across too (${ordinal(m.rank)}).`, "good");
+          } else say(`🏆 ${winner.name} wins!`, "bad");
         } else if (survivors.length && rules.freePlay) {
           const falls = me().falls || 0;
           api.addScore(Math.max(0, 150 - falls * 25) + timeBonus);
@@ -993,8 +1018,12 @@ Hub.register({
       } else {
         const winner = order.find((p) => p.rank === 1);
         const iWon = winner && isMine(winner);
+        const m = me();
         if (iWon) api.addScore(100);
-        say(winner ? `🏆 ${iWon ? "You win" : winner.name + " wins"}!` : "Nobody made it across. The bridge wins.", iWon ? "good" : "bad");
+        else if (m && m.finished) api.addScore(40);
+        say(winner ? `🏆 ${iWon ? "You win" : winner.name + " wins"}!` +
+          (!iWon && m && m.finished ? ` You crossed too (${ordinal(m.rank)}).` : "") : "Nobody made it across. The bridge wins.",
+          iWon || (m && m.finished) ? "good" : "bad");
         if (room) room.update({ inGame: false }); // friends can join before the rematch
       }
       input.showTouch(false);
@@ -1990,6 +2019,15 @@ Hub.register({
           if (countdown <= 0) later(() => (countEl.textContent = ""), 700);
         } else {
           elapsed += dt;
+          if (finishWindow > 0) { // someone already won: the rest are running out of time
+            finishWindow -= dt;
+            if (finishWindow <= 0) {
+              finishWindow = 0;
+              say("Time's up for everyone still on the bridge.", "bad");
+              order.forEach((p) => { if (!p.finished) p.out = true; });
+              later(endMatch, 1200);
+            }
+          }
           if (rules.time) {
             clockLeft -= dt;
             if (clockLeft <= 0) { clockLeft = 0; timeUpOnce(); }
