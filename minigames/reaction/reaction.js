@@ -4,6 +4,9 @@ Hub.register({
   name: "Reaction Time",
   description: "Click the instant it turns green.",
   author: "Player 2",
+  color: "#ffcc33",
+  art: `<svg viewBox="0 0 120 70"><rect x="38" y="4" width="44" height="62" rx="10" fill="none" stroke="#ffcc33" stroke-width="3"/>
+    <circle cx="60" cy="20" r="8" fill="#ff5c5c"/><circle cx="60" cy="35" r="8" fill="#5a5a3a"/><circle cx="60" cy="50" r="8" fill="#3ddc84"/></svg>`,
 
   start(container, api) {
     const ROUNDS = 5;
