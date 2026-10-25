@@ -147,6 +147,7 @@ Hub.register({
                   transition: background .15s; white-space: nowrap; }
       .rl-light.green { background: rgba(31,140,80,.85); }
       .rl-light.red { background: rgba(200,30,50,.9); }
+      .rl-splash { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
       .rl-edge { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 rgba(255,0,40,0);
                  transition: box-shadow .2s; }
       .rl-edge.on { box-shadow: inset 0 0 calc(var(--u) * 8) calc(var(--u) * 2) rgba(255,0,40,.45); }
@@ -981,18 +982,6 @@ Hub.register({
       return p;
     }
 
-    // A fallen body: lower it until its lowest bone is just above the ground (bones sit inside the body).
-    const boneV = new THREE.Vector3();
-    function settle(p, kk, dt) {
-      let lo = Infinity;
-      kk.model.traverse((o) => { if (o.isBone) { o.getWorldPosition(boneV); if (boneV.y < lo) lo = boneV.y; } });
-      if (!isFinite(lo)) return;
-      const drop = lo - 0.1; // how far above the ground it's floating
-      p.mesh.position.y -= drop * Math.min(1, dt * 6);
-      const blob = p.mesh.children.find((c) => c.geometry === blobGeo);
-      if (blob) blob.position.y = -p.mesh.position.y + 0.015; // the shadow stays on the ground
-    }
-
     function animate(p, dt) {
       if (simulating) return; // nobody's watching: skip the animation work
       const kk = p.mesh.userData.kk;
@@ -1000,10 +989,7 @@ Hub.register({
         if (p.dead) p.mesh.userData.body.rotation.x = Math.min(Math.PI / 2, p.mesh.userData.body.rotation.x + dt * 6);
         return;
       }
-      if (p.dead) {
-        kk.play("Death_A", { once: true, fade: 0.08 });
-        settle(p, kk, dt);
-      }
+      if (p.dead) kk.play("Death_A", { once: true, fade: 0.08 }); // (shared/models.js lays them on the ground)
       else if (p.pushT > 0) kk.play("Melee_Block_Attack", { once: true, speed: 1.6, fade: 0.05 }); // two-handed shove
       else if (p.hitT > 0) kk.play("Hit_A", { once: true, fade: 0.05 });
       else if (p.finished) kk.play("Cheering");
@@ -1325,6 +1311,66 @@ Hub.register({
       after(1.8, checkEnd);
       splatter(p);
       after(1.4, () => bleed(p)); // once they're lying on the ground
+      splashCheck(p);
+    }
+
+    // ---------- blood on YOUR screen: someone shot right in front of you ----------
+    // Within 10 ft of you and inside a 60° slice of your view (30° either side of where your camera points),
+    // blood splatters across your screen and fades away over about 8 seconds.
+    const SPLASH_RANGE = 3.05; // 10 ft
+    const SPLASH_HALF_ANGLE = THREE.MathUtils.degToRad(30);
+    const SPLASH_FADE = 8; // seconds
+    const splashEl = document.createElement("canvas");
+    splashEl.className = "rl-splash";
+    wrap.insertBefore(splashEl, edgeEl);
+    let splashLeft = 0;
+    const camDir = new THREE.Vector3();
+    function splashCheck(victim) {
+      const m = me();
+      if (simulating || !m || m.dead || victim === m) return;
+      const d = Math.hypot(victim.mesh.position.x - m.mesh.position.x, victim.mesh.position.z - m.mesh.position.z);
+      if (d > SPLASH_RANGE) return;
+      camera.getWorldDirection(camDir);
+      const tx = victim.mesh.position.x - m.mesh.position.x, tz = victim.mesh.position.z - m.mesh.position.z; // from you, the way you're looking
+      const fl = Math.hypot(camDir.x, camDir.z), tl = Math.hypot(tx, tz);
+      if (!fl || !tl) return;
+      const cos = (camDir.x * tx + camDir.z * tz) / (fl * tl);
+      if (cos < Math.cos(SPLASH_HALF_ANGLE)) return; // not in front of you
+      splash(1 - (d / SPLASH_RANGE) * 0.6); // closer = more blood
+    }
+    function splash(amount) {
+      const w = (splashEl.width = Math.max(1, wrap.clientWidth)), h = (splashEl.height = Math.max(1, wrap.clientHeight));
+      if (splashLeft <= 0) splashEl.getContext("2d").clearRect(0, 0, w, h);
+      const g = splashEl.getContext("2d");
+      const n = Math.round(6 + amount * 14);
+      const u = Math.min(w, h);
+      for (let i = 0; i < n; i++) {
+        const x = rand(0.05, 0.95) * w, y = rand(0.05, 0.9) * h, r = u * rand(0.02, 0.07) * (0.6 + amount);
+        g.fillStyle = `rgba(${110 + Math.floor(rand(0, 40))},0,${Math.floor(rand(4, 14))},${rand(0.75, 0.95).toFixed(2)})`;
+        g.beginPath(); // a ragged drop
+        for (let k = 0; k <= 14; k++) {
+          const a = (k / 14) * Math.PI * 2, rr = r * rand(0.7, 1.15);
+          k ? g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+        }
+        g.fill();
+        for (let k = 0; k < 4; k++) { // specks around it
+          const a = Math.random() * Math.PI * 2, dd = r * rand(1.3, 2.4);
+          g.beginPath(); g.arc(x + Math.cos(a) * dd, y + Math.sin(a) * dd, r * rand(0.08, 0.2), 0, Math.PI * 2); g.fill();
+        }
+        if (Math.random() < 0.6) { // a drip running down
+          g.fillRect(x - r * 0.12, y, r * 0.24, r * rand(1.5, 4));
+          g.beginPath(); g.arc(x, y + r * rand(1.5, 4), r * 0.2, 0, Math.PI * 2); g.fill();
+        }
+      }
+      splashLeft = SPLASH_FADE;
+      splashEl.style.opacity = "1";
+      hitSound();
+    }
+    function updateSplash(dt) {
+      if (splashLeft <= 0) return;
+      splashLeft -= dt;
+      splashEl.style.opacity = Math.max(0, splashLeft / SPLASH_FADE).toFixed(3); // fades out evenly
+      if (splashLeft <= 0) splashEl.getContext("2d").clearRect(0, 0, splashEl.width, splashEl.height);
     }
 
     // ---------- blood: a spatter when the shot hits, then a pool that slowly spreads around the head ----------
@@ -1515,6 +1561,8 @@ Hub.register({
       bolts.forEach((b) => scene.remove(b.obj));
       pools.forEach((b) => { scene.remove(b.m); b.m.geometry.dispose(); b.m.material.dispose(); });
       pools.length = 0;
+      splashLeft = 0;
+      splashEl.style.opacity = "0";
       bolts.length = 0;
       started = done = false;
       wasSpectating = false;
@@ -2174,6 +2222,7 @@ Hub.register({
       });
       updateBolts(dt);
       updatePools(dt);
+      updateSplash(dt);
 
       // camera: behind and above you, looking down the field at the doll.
       // Once you're dead (after a moment to see yourself fall), you watch the rest from the doll's eyes.
