@@ -600,7 +600,41 @@ Hub.register({
       tone(190, 0.28, 0.22, "triangle"); tone(95, 0.2, 0.16, "sawtooth");
       noise(0.18, 0.12, "highpass", 2500, 0.02);
     }
-    function hitSound() { tone(80, 0.25, 0.28, "sine"); noise(0.12, 0.12, "lowpass", 600); }
+    // The bolt hits the head: a wet, fleshy crack. Layers: a sharp crack, a squelch that sweeps down
+    // (resonant filter on noise), a deep thud, a short crunch of bone, and a few splatters after.
+    // level 0-1: quieter for shots far away from you.
+    function headshotSound(level = 1) {
+      const a = audio(); if (!a || level <= 0) return;
+      const t = a.currentTime;
+      const out = a.createGain(); out.gain.value = level; out.connect(bus.sfx);
+      const noiseBuf = (dur) => {
+        const len = Math.max(1, Math.floor(a.sampleRate * dur));
+        const b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        return b;
+      };
+      const burst = (when, dur, type, f0, f1, q, peak) => { // filtered noise with a frequency sweep
+        const src = a.createBufferSource(); src.buffer = noiseBuf(dur);
+        const f = a.createBiquadFilter(); f.type = type; f.Q.value = q;
+        f.frequency.setValueAtTime(f0, t + when);
+        f.frequency.exponentialRampToValueAtTime(Math.max(40, f1), t + when + dur);
+        const g = a.createGain(); env(g, t + when, 0.003, peak, dur);
+        src.connect(f).connect(g).connect(out);
+        src.start(t + when);
+      };
+      burst(0, 0.035, "highpass", 2500, 1800, 0.7, 0.55); // crack
+      burst(0.004, 0.22, "bandpass", 1400, 180, 6, 0.9); // wet squelch, sweeping down
+      burst(0.01, 0.12, "lowpass", 900, 300, 1, 0.5); // body of the impact
+      for (let i = 0; i < 5; i++) burst(0.012 + i * 0.011 + Math.random() * 0.006, 0.012, "bandpass", 3000 + Math.random() * 2000, 2000, 2, 0.25); // crunch
+      const o = a.createOscillator(); o.type = "sine"; // deep thud
+      o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.18);
+      const og = a.createGain(); env(og, t, 0.004, 0.7, 0.2);
+      o.connect(og).connect(out); o.start(t); o.stop(t + 0.3);
+      for (let i = 0; i < 4; i++) { // splatters landing
+        const w = 0.12 + i * 0.07 + Math.random() * 0.05;
+        burst(w, 0.05 + Math.random() * 0.04, "bandpass", 900 + Math.random() * 800, 300, 4, 0.18 + Math.random() * 0.12);
+      }
+    }
     function buzzer() { tone(110, 0.9, 0.14, "square"); tone(116, 0.9, 0.1, "square"); }
 
     // music box tune (original) for the countdown and the end
@@ -1300,7 +1334,10 @@ Hub.register({
       if (p.dead) return;
       p.dead = true;
       p.deadAt = time;
-      hitSound();
+      // the head shot: louder the closer you are (full within ~30 ft, quieter out to the far end)
+      const lis = me() && !me().dead ? me().mesh.position : camera.position;
+      const far = Math.hypot(p.mesh.position.x - lis.x, p.mesh.position.z - lis.z);
+      headshotSound(clamp(1.15 - far / 80, 0.3, 1));
       // the announcer stops once every real player is out (or time's up): no reading out the rest
       const realLeft = order.some((q) => !q.cpu && !q.dummy && !q.left && !q.out && !q.finished);
       if (phase !== "over" && (realLeft || (!p.cpu && !p.dummy))) announce(`Player ${p.num}, eliminated.`);
@@ -1364,7 +1401,6 @@ Hub.register({
       }
       splashLeft = SPLASH_FADE;
       splashEl.style.opacity = "1";
-      hitSound();
     }
     function updateSplash(dt) {
       if (splashLeft <= 0) return;
@@ -2107,7 +2143,7 @@ Hub.register({
           if (key === "announcer") announce("Player 456, eliminated.");
           else if (key === "song") sing(0, 0.4, 530);
           else if (key === "music") tone(659, 0.8, 0.06, "triangle", 0, "music");
-          else shotSound();
+          else { shotSound(); setTimeout(() => headshotSound(1), 250); }
         };
         row.append(el("span", "", label), r, num);
         det.append(row);
