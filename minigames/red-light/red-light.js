@@ -147,6 +147,7 @@ Hub.register({
                   transition: background .15s; white-space: nowrap; }
       .rl-light.green { background: rgba(31,140,80,.85); }
       .rl-light.red { background: rgba(200,30,50,.9); }
+      .rl-splash { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
       .rl-edge { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 rgba(255,0,40,0);
                  transition: box-shadow .2s; }
       .rl-edge.on { box-shadow: inset 0 0 calc(var(--u) * 8) calc(var(--u) * 2) rgba(255,0,40,.45); }
@@ -599,7 +600,41 @@ Hub.register({
       tone(190, 0.28, 0.22, "triangle"); tone(95, 0.2, 0.16, "sawtooth");
       noise(0.18, 0.12, "highpass", 2500, 0.02);
     }
-    function hitSound() { tone(80, 0.25, 0.28, "sine"); noise(0.12, 0.12, "lowpass", 600); }
+    // The bolt hits the head: a wet, fleshy crack. Layers: a sharp crack, a squelch that sweeps down
+    // (resonant filter on noise), a deep thud, a short crunch of bone, and a few splatters after.
+    // level 0-1: quieter for shots far away from you.
+    function headshotSound(level = 1) {
+      const a = audio(); if (!a || level <= 0) return;
+      const t = a.currentTime;
+      const out = a.createGain(); out.gain.value = level; out.connect(bus.sfx);
+      const noiseBuf = (dur) => {
+        const len = Math.max(1, Math.floor(a.sampleRate * dur));
+        const b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        return b;
+      };
+      const burst = (when, dur, type, f0, f1, q, peak) => { // filtered noise with a frequency sweep
+        const src = a.createBufferSource(); src.buffer = noiseBuf(dur);
+        const f = a.createBiquadFilter(); f.type = type; f.Q.value = q;
+        f.frequency.setValueAtTime(f0, t + when);
+        f.frequency.exponentialRampToValueAtTime(Math.max(40, f1), t + when + dur);
+        const g = a.createGain(); env(g, t + when, 0.003, peak, dur);
+        src.connect(f).connect(g).connect(out);
+        src.start(t + when);
+      };
+      burst(0, 0.035, "highpass", 2500, 1800, 0.7, 0.55); // crack
+      burst(0.004, 0.22, "bandpass", 1400, 180, 6, 0.9); // wet squelch, sweeping down
+      burst(0.01, 0.12, "lowpass", 900, 300, 1, 0.5); // body of the impact
+      for (let i = 0; i < 5; i++) burst(0.012 + i * 0.011 + Math.random() * 0.006, 0.012, "bandpass", 3000 + Math.random() * 2000, 2000, 2, 0.25); // crunch
+      const o = a.createOscillator(); o.type = "sine"; // deep thud
+      o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.18);
+      const og = a.createGain(); env(og, t, 0.004, 0.7, 0.2);
+      o.connect(og).connect(out); o.start(t); o.stop(t + 0.3);
+      for (let i = 0; i < 4; i++) { // splatters landing
+        const w = 0.12 + i * 0.07 + Math.random() * 0.05;
+        burst(w, 0.05 + Math.random() * 0.04, "bandpass", 900 + Math.random() * 800, 300, 4, 0.18 + Math.random() * 0.12);
+      }
+    }
     function buzzer() { tone(110, 0.9, 0.14, "square"); tone(116, 0.9, 0.1, "square"); }
 
     // music box tune (original) for the countdown and the end
@@ -981,18 +1016,6 @@ Hub.register({
       return p;
     }
 
-    // A fallen body: lower it until its lowest bone is just above the ground (bones sit inside the body).
-    const boneV = new THREE.Vector3();
-    function settle(p, kk, dt) {
-      let lo = Infinity;
-      kk.model.traverse((o) => { if (o.isBone) { o.getWorldPosition(boneV); if (boneV.y < lo) lo = boneV.y; } });
-      if (!isFinite(lo)) return;
-      const drop = lo - 0.1; // how far above the ground it's floating
-      p.mesh.position.y -= drop * Math.min(1, dt * 6);
-      const blob = p.mesh.children.find((c) => c.geometry === blobGeo);
-      if (blob) blob.position.y = -p.mesh.position.y + 0.015; // the shadow stays on the ground
-    }
-
     function animate(p, dt) {
       if (simulating) return; // nobody's watching: skip the animation work
       const kk = p.mesh.userData.kk;
@@ -1000,10 +1023,7 @@ Hub.register({
         if (p.dead) p.mesh.userData.body.rotation.x = Math.min(Math.PI / 2, p.mesh.userData.body.rotation.x + dt * 6);
         return;
       }
-      if (p.dead) {
-        kk.play("Death_A", { once: true, fade: 0.08 });
-        settle(p, kk, dt);
-      }
+      if (p.dead) kk.play("Death_A", { once: true, fade: 0.08 }); // (shared/models.js lays them on the ground)
       else if (p.pushT > 0) kk.play("Melee_Block_Attack", { once: true, speed: 1.6, fade: 0.05 }); // two-handed shove
       else if (p.hitT > 0) kk.play("Hit_A", { once: true, fade: 0.05 });
       else if (p.finished) kk.play("Cheering");
@@ -1314,7 +1334,10 @@ Hub.register({
       if (p.dead) return;
       p.dead = true;
       p.deadAt = time;
-      hitSound();
+      // the head shot: louder the closer you are (full within ~30 ft, quieter out to the far end)
+      const lis = me() && !me().dead ? me().mesh.position : camera.position;
+      const far = Math.hypot(p.mesh.position.x - lis.x, p.mesh.position.z - lis.z);
+      headshotSound(clamp(1.15 - far / 80, 0.3, 1));
       // the announcer stops once every real player is out (or time's up): no reading out the rest
       const realLeft = order.some((q) => !q.cpu && !q.dummy && !q.left && !q.out && !q.finished);
       if (phase !== "over" && (realLeft || (!p.cpu && !p.dummy))) announce(`Player ${p.num}, eliminated.`);
@@ -1325,6 +1348,65 @@ Hub.register({
       after(1.8, checkEnd);
       splatter(p);
       after(1.4, () => bleed(p)); // once they're lying on the ground
+      splashCheck(p);
+    }
+
+    // ---------- blood on YOUR screen: someone shot right in front of you ----------
+    // Within 10 ft of you and inside a 60° slice of your view (30° either side of where your camera points),
+    // blood splatters across your screen and fades away over about 8 seconds.
+    const SPLASH_RANGE = 3.05; // 10 ft
+    const SPLASH_HALF_ANGLE = THREE.MathUtils.degToRad(30);
+    const SPLASH_FADE = 8; // seconds
+    const splashEl = document.createElement("canvas");
+    splashEl.className = "rl-splash";
+    wrap.insertBefore(splashEl, edgeEl);
+    let splashLeft = 0;
+    const camDir = new THREE.Vector3();
+    function splashCheck(victim) {
+      const m = me();
+      if (simulating || !m || m.dead || victim === m) return;
+      const d = Math.hypot(victim.mesh.position.x - m.mesh.position.x, victim.mesh.position.z - m.mesh.position.z);
+      if (d > SPLASH_RANGE) return;
+      camera.getWorldDirection(camDir);
+      const tx = victim.mesh.position.x - m.mesh.position.x, tz = victim.mesh.position.z - m.mesh.position.z; // from you, the way you're looking
+      const fl = Math.hypot(camDir.x, camDir.z), tl = Math.hypot(tx, tz);
+      if (!fl || !tl) return;
+      const cos = (camDir.x * tx + camDir.z * tz) / (fl * tl);
+      if (cos < Math.cos(SPLASH_HALF_ANGLE)) return; // not in front of you
+      splash(1 - (d / SPLASH_RANGE) * 0.6); // closer = more blood
+    }
+    function splash(amount) {
+      const w = (splashEl.width = Math.max(1, wrap.clientWidth)), h = (splashEl.height = Math.max(1, wrap.clientHeight));
+      if (splashLeft <= 0) splashEl.getContext("2d").clearRect(0, 0, w, h);
+      const g = splashEl.getContext("2d");
+      const n = Math.round(6 + amount * 14);
+      const u = Math.min(w, h);
+      for (let i = 0; i < n; i++) {
+        const x = rand(0.05, 0.95) * w, y = rand(0.05, 0.9) * h, r = u * rand(0.02, 0.07) * (0.6 + amount);
+        g.fillStyle = `rgba(${110 + Math.floor(rand(0, 40))},0,${Math.floor(rand(4, 14))},${rand(0.75, 0.95).toFixed(2)})`;
+        g.beginPath(); // a ragged drop
+        for (let k = 0; k <= 14; k++) {
+          const a = (k / 14) * Math.PI * 2, rr = r * rand(0.7, 1.15);
+          k ? g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr) : g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+        }
+        g.fill();
+        for (let k = 0; k < 4; k++) { // specks around it
+          const a = Math.random() * Math.PI * 2, dd = r * rand(1.3, 2.4);
+          g.beginPath(); g.arc(x + Math.cos(a) * dd, y + Math.sin(a) * dd, r * rand(0.08, 0.2), 0, Math.PI * 2); g.fill();
+        }
+        if (Math.random() < 0.6) { // a drip running down
+          g.fillRect(x - r * 0.12, y, r * 0.24, r * rand(1.5, 4));
+          g.beginPath(); g.arc(x, y + r * rand(1.5, 4), r * 0.2, 0, Math.PI * 2); g.fill();
+        }
+      }
+      splashLeft = SPLASH_FADE;
+      splashEl.style.opacity = "1";
+    }
+    function updateSplash(dt) {
+      if (splashLeft <= 0) return;
+      splashLeft -= dt;
+      splashEl.style.opacity = Math.max(0, splashLeft / SPLASH_FADE).toFixed(3); // fades out evenly
+      if (splashLeft <= 0) splashEl.getContext("2d").clearRect(0, 0, splashEl.width, splashEl.height);
     }
 
     // ---------- blood: a spatter when the shot hits, then a pool that slowly spreads around the head ----------
@@ -1515,6 +1597,8 @@ Hub.register({
       bolts.forEach((b) => scene.remove(b.obj));
       pools.forEach((b) => { scene.remove(b.m); b.m.geometry.dispose(); b.m.material.dispose(); });
       pools.length = 0;
+      splashLeft = 0;
+      splashEl.style.opacity = "0";
       bolts.length = 0;
       started = done = false;
       wasSpectating = false;
@@ -2059,7 +2143,7 @@ Hub.register({
           if (key === "announcer") announce("Player 456, eliminated.");
           else if (key === "song") sing(0, 0.4, 530);
           else if (key === "music") tone(659, 0.8, 0.06, "triangle", 0, "music");
-          else shotSound();
+          else { shotSound(); setTimeout(() => headshotSound(1), 250); }
         };
         row.append(el("span", "", label), r, num);
         det.append(row);
@@ -2174,6 +2258,7 @@ Hub.register({
       });
       updateBolts(dt);
       updatePools(dt);
+      updateSplash(dt);
 
       // camera: behind and above you, looking down the field at the doll.
       // Once you're dead (after a moment to see yourself fall), you watch the rest from the doll's eyes.
