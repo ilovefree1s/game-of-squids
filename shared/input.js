@@ -4,13 +4,14 @@
 //   const input = Input.create(someElement);   // phone controls are drawn inside someElement
 //   const m = input.move();       // { x, y } from -1..1  (x: right is +, y: forward/up is +)
 //   if (input.jump()) { ... }      // true once per press of the jump button
+//   if (input.push()) { ... }      // true once per press of the push button
 //   input.showTouch(false);        // hide the phone controls (e.g. on a menu screen)
 //   input.editLayout(onDone);      // let the player drag/resize the phone controls (saved on their device)
 //   input.destroy();               // in your game's cleanup
 //
-// Keyboard:   WASD / arrow keys to move, Space to jump
-// Controller: left stick or d-pad to move, A / ✕ (bottom button) to jump
-// Phone:      joystick + JUMP button (appear automatically on touch screens; players can move and resize them)
+// Keyboard:   WASD / arrow keys to move, Space to jump, F to push
+// Controller: left stick or d-pad to move, A / ✕ (bottom button) to jump, X / □ (left button) to push
+// Phone:      joystick + JUMP + PUSH buttons (appear on touch screens; players can move and resize them)
 
 const Input = (() => {
   const CSS = `
@@ -24,6 +25,8 @@ const Input = (() => {
                 background: rgba(255,204,51,.75); color: #111; font-weight: 800;
                 display: grid; place-items: center; pointer-events: auto; touch-action: none; user-select: none; }
     .inp-jump.down { background: rgba(255,204,51,1); }
+    .inp-push { background: rgba(255,92,92,.75); color: #fff; }
+    .inp-push.down { background: rgba(255,92,92,1); }
     .inp-touch.editing .inp-stick, .inp-touch.editing .inp-jump { outline: 3px dashed #fff; outline-offset: 4px; cursor: move; }
     .inp-edit { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: min(92%, 340px);
                 background: rgba(20,20,31,.95); color: #f2f2f7; border-radius: 12px; padding: 12px 14px;
@@ -39,12 +42,16 @@ const Input = (() => {
   `;
 
   // Where the phone controls sit: centers as fractions of the game area, sizes in pixels.
-  const DEFAULT_LAYOUT = { stick: { x: 0.17, y: 0.8, size: 130 }, jump: { x: 0.85, y: 0.8, size: 96 } };
+  const DEFAULT_LAYOUT = {
+    stick: { x: 0.17, y: 0.8, size: 130 },
+    jump: { x: 0.85, y: 0.8, size: 96 },
+    push: { x: 0.84, y: 0.6, size: 74 },
+  };
   const LAYOUT_KEY = "inp:layout";
   function loadLayout() {
     try {
       const l = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
-      if (l && l.stick && l.jump) return l;
+      if (l && l.stick && l.jump) return { ...JSON.parse(JSON.stringify(DEFAULT_LAYOUT)), ...l }; // older saves have no push
     } catch {}
     return JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
   }
@@ -59,6 +66,7 @@ const Input = (() => {
     }
 
     let jumpQueued = false;
+    let pushQueued = false;
     const keys = new Set();
     const MOVE_KEYS = ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"];
     const typing = (e) => e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
@@ -70,6 +78,8 @@ const Input = (() => {
       if (k === " " || k === "spacebar") {
         e.preventDefault();
         if (!e.repeat) jumpQueued = true;
+      } else if (k === "f") {
+        if (!e.repeat) pushQueued = true;
       } else if (MOVE_KEYS.includes(k)) {
         e.preventDefault();
         keys.add(k);
@@ -83,6 +93,7 @@ const Input = (() => {
 
     // ----- game controller -----
     const padJumpWas = {};
+    const padPushWas = {};
     function readPads() {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
       let best = null;
@@ -98,6 +109,9 @@ const Input = (() => {
         const j = b(0);
         if (j && !padJumpWas[p.index]) jumpQueued = true;
         padJumpWas[p.index] = j;
+        const pu = b(2);
+        if (pu && !padPushWas[p.index]) pushQueued = true;
+        padPushWas[p.index] = pu;
         if (!best && (x || y)) best = { x, y: -y };
       }
       return best;
@@ -114,7 +128,10 @@ const Input = (() => {
     const jumpBtn = document.createElement("div");
     jumpBtn.className = "inp-jump";
     jumpBtn.textContent = "JUMP";
-    ui.append(stick, jumpBtn);
+    const pushBtn = document.createElement("div");
+    pushBtn.className = "inp-jump inp-push";
+    pushBtn.textContent = "PUSH";
+    ui.append(stick, jumpBtn, pushBtn);
     parent.append(ui);
 
     let layout = loadLayout();
@@ -126,6 +143,8 @@ const Input = (() => {
       };
       place(stick, layout.stick);
       place(jumpBtn, layout.jump);
+      place(pushBtn, layout.push);
+      pushBtn.style.fontSize = Math.max(11, Math.round(layout.push.size * 0.19)) + "px";
       const k = Math.round(layout.stick.size * 0.43);
       knob.style.width = knob.style.height = k + "px";
       jumpBtn.style.fontSize = Math.max(12, Math.round(layout.jump.size * 0.17)) + "px";
@@ -172,6 +191,14 @@ const Input = (() => {
     jumpBtn.addEventListener("pointerup", jumpUp);
     jumpBtn.addEventListener("pointercancel", jumpUp);
     jumpBtn.addEventListener("pointerleave", jumpUp);
+    pushBtn.addEventListener("pointerdown", (e) => {
+      if (editing) return;
+      e.preventDefault();
+      pushQueued = true;
+      pushBtn.classList.add("down");
+    });
+    const pushUp = () => pushBtn.classList.remove("down");
+    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => pushBtn.addEventListener(ev, pushUp));
 
     // show phone controls on touch screens (or once someone touches the screen)
     let isTouch = opts.touch === true ||
@@ -191,7 +218,7 @@ const Input = (() => {
       applyVisible();
       const panel = document.createElement("div");
       panel.className = "inp-edit";
-      panel.innerHTML = `<div><b>Controls layout</b><br>Drag the joystick and JUMP button to move them.</div>`;
+      panel.innerHTML = `<div><b>Controls layout</b><br>Drag the joystick, JUMP and PUSH buttons to move them.</div>`;
       const slider = (label, key, min, max) => {
         const row = document.createElement("label");
         const r = document.createElement("input");
@@ -203,13 +230,14 @@ const Input = (() => {
       };
       const s1 = slider("Joystick size", "stick", 80, 220);
       const s2 = slider("Jump size", "jump", 60, 180);
+      const s3 = slider("Push size", "push", 50, 160);
       const btns = document.createElement("div");
       btns.className = "row";
       const reset = document.createElement("button");
       reset.className = "alt"; reset.textContent = "Reset";
       reset.onclick = () => {
         layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
-        s1.value = layout.stick.size; s2.value = layout.jump.size;
+        s1.value = layout.stick.size; s2.value = layout.jump.size; s3.value = layout.push.size;
         applyLayout();
       };
       const done = document.createElement("button");
@@ -219,8 +247,7 @@ const Input = (() => {
         ui.classList.remove("editing");
         panel.remove();
         saveLayout(layout);
-        stick.removeEventListener("pointerdown", dragStart);
-        jumpBtn.removeEventListener("pointerdown", dragStart);
+        [stick, jumpBtn, pushBtn].forEach((b) => b.removeEventListener("pointerdown", dragStart));
         applyVisible();
         if (onDone) onDone();
       };
@@ -234,7 +261,7 @@ const Input = (() => {
         if (!editing) return;
         e.preventDefault();
         e.stopPropagation();
-        const key = e.currentTarget === stick ? "stick" : "jump";
+        const key = e.currentTarget === stick ? "stick" : e.currentTarget === pushBtn ? "push" : "jump";
         drag = { key, id: e.pointerId };
         e.currentTarget.setPointerCapture(e.pointerId);
       }
@@ -250,9 +277,8 @@ const Input = (() => {
         applyLayout();
       }
       const dragEnd = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
-      stick.addEventListener("pointerdown", dragStart);
-      jumpBtn.addEventListener("pointerdown", dragStart);
-      [stick, jumpBtn].forEach((b) => {
+      [stick, jumpBtn, pushBtn].forEach((b) => b.addEventListener("pointerdown", dragStart));
+      [stick, jumpBtn, pushBtn].forEach((b) => {
         b.addEventListener("pointermove", dragMove);
         b.addEventListener("pointerup", dragEnd);
         b.addEventListener("pointercancel", dragEnd);
@@ -278,7 +304,13 @@ const Input = (() => {
         jumpQueued = false;
         return j;
       },
-      clearJump() { jumpQueued = false; },
+      push() {
+        readPads();
+        const p = pushQueued;
+        pushQueued = false;
+        return p;
+      },
+      clearJump() { jumpQueued = false; pushQueued = false; },
       showTouch(on) { wanted = on; applyVisible(); },
       editLayout,
       get isTouch() { return isTouch; },

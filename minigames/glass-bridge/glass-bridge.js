@@ -12,10 +12,12 @@
 //   time limit (off / 60 / 90 / 120 / 180s), show safe tiles in green, players bump each other,
 //   free play (respawn instantly when you fall; ends when everyone has crossed or time runs out)
 //
+// FIRST PLAYER ACROSS WINS. PUSH shoves whoever is in front of you.
+//
 // Controls (shared/input.js):
-//   Keyboard   WASD / arrows to move, Space to jump
-//   Controller left stick / d-pad to move, A / ✕ to jump
-//   Phone      on-screen joystick + JUMP button
+//   Keyboard   WASD / arrows to move, Space to jump, F to push
+//   Controller left stick / d-pad to move, A / ✕ to jump, X / □ to push
+//   Phone      on-screen joystick + JUMP + PUSH buttons (movable / resizable)
 //
 // Needs (loaded in index.html): shared/lib/three.min.js, shared/input.js,
 // and for online play shared/lib/supabase.js + shared/config.js + shared/net.js.
@@ -40,12 +42,15 @@ Hub.register({
     const MAX_ONLINE = 8;
     const ROW_GAP = 2.4;
     const LANE_X = 1.25;
-    const PANEL = 1.5;
+    const PANEL = 1.6; // glass panel size
     const FIRST_Z = -4;
     const GRAVITY = 24;
     const SPEED = 4.2; // run speed
     const JUMP_V = 7; // jump strength (a full-speed jump covers about one row)
     const SEND_EVERY = 0.1; // online: seconds between position updates
+    const PUSH_RANGE = 1.5; // how far a push reaches
+    const PUSH_FORCE = 9; // how hard a push shoves
+    const PUSH_COOLDOWN = 0.7; // seconds between pushes
 
     const rowZ = (i) => FIRST_Z - i * ROW_GAP;
     const laneX = (side) => (side === 0 ? -LANE_X : LANE_X); // 0 = left, 1 = right
@@ -191,7 +196,9 @@ Hub.register({
     function resize() {
       const w = wrap.clientWidth || 800;
       const portrait = window.innerHeight > window.innerWidth; // phones held upright get a tall view
-      const h = Math.max(380, Math.round(portrait ? window.innerHeight - 190 : Math.min(w * 0.6, window.innerHeight - 160)));
+      const full = document.body.classList.contains("gos-fs"); // hub's full screen button
+      const h = full ? Math.max(300, container.clientHeight)
+        : Math.max(380, Math.round(portrait ? window.innerHeight - 190 : Math.min(w * 0.6, window.innerHeight - 160)));
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -274,7 +281,7 @@ Hub.register({
     }
 
     // What's under (x, z)? Returns { top, kind, row, side } or null (nothing: you fall).
-    const M = 0.12; // a little forgiveness at the edges
+    const M = 0.2; // forgiveness: you count as on the glass if your body (not just your center) is over it
     function supportAt(x, z) {
       const inR = (r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
       if (inR(START)) return { top: 0, kind: "start" };
@@ -315,13 +322,16 @@ Hub.register({
           const patch = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.18),
             new THREE.MeshBasicMaterial({ map: textTexture(num, 128, 64, "#f4f4f4", "#111", "bold 44px sans-serif") }));
           patch.userData.own = true;
-          patch.position.set(0, 0.7, 0.245); // middle of the back (KayKit heads are big!)
           g.add(patch);
           g.updateMatrixWorld(true);
           const chest = kk.bone("chest");
+          const cp = new THREE.Vector3(0, 1.2, 0);
+          if (chest) chest.getWorldPosition(cp);
+          patch.position.set(0, cp.y + 0.02, 0.17); // upper back
+          g.updateMatrixWorld(true);
           if (chest) chest.attach(patch);
         }
-        addNameTag(g, name, mine);
+        addNameTag(g, name, mine, 2.75);
         g.userData = { kk };
         scene.add(g);
         return g;
@@ -329,7 +339,7 @@ Hub.register({
       return makeBlockyPlayer(g, num, name, mine);
     }
 
-    function addNameTag(g, name, mine) {
+    function addNameTag(g, name, mine, y = 2.35) {
       if (!name) return;
       const tag = new THREE.Sprite(new THREE.SpriteMaterial({
         map: textTexture(name, 256, 64, null, mine ? "#ffcc33" : "#ffffff", "bold 34px sans-serif"),
@@ -337,12 +347,12 @@ Hub.register({
       }));
       tag.userData.own = true;
       tag.scale.set(1.4, 0.35, 1);
-      tag.position.y = 2.35;
+      tag.position.y = y;
       g.add(tag);
     }
 
     function makeBlockyPlayer(g, num, name, mine) {
-      const suit = new THREE.MeshStandardMaterial({ color: 0x1f7a63, roughness: 0.85 });
+      const suit = new THREE.MeshStandardMaterial({ color: 0x14513f, roughness: 0.85 });
       const white = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.8 });
       const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48a, roughness: 0.7 });
       const hair = new THREE.MeshStandardMaterial({ color: 0x1a1410, roughness: 0.9 });
@@ -400,6 +410,12 @@ Hub.register({
 
     function animate(p, speed, inAir, dt) {
       const kk = p.mesh.userData.kk;
+      if (!p.out && p.pushT > 0) { // in the middle of a push
+        p.pushT -= dt;
+        if (kk) kk.update(dt);
+        else p.mesh.userData.arms.forEach((a) => (a.rotation.x = -1.5));
+        return;
+      }
       if (kk) {
         if (p.out) {
           kk.play("Jump_Idle", { speed: 1.6 });
@@ -573,7 +589,7 @@ Hub.register({
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too") +
+      say((touch ? "Joystick to move, JUMP to jump, PUSH to shove." : "WASD / arrows to move · Space to jump · F to push · controllers work too") +
         (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
@@ -675,28 +691,21 @@ Hub.register({
       p.finishTime = elapsed;
       renderPlayers();
       say(mode === "online"
-        ? `${nameOf(p)} finished ${ordinal(p.rank)}! (${clockText(p.finishTime)})`
+        ? (p.rank === 1 ? `🏆 ${nameOf(p)} ${isMine(p) ? "win" : "wins"}! (${clockText(p.finishTime)})` : `${nameOf(p)} finished ${ordinal(p.rank)}`)
         : `${nameOf(p)} made it across! (${clockText(p.finishTime)})`, "good");
       if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
-      if (mode === "online") {
-        if (isMine(p)) send({ t: "finish" });
-        return checkAllDone();
-      }
-      endMatch();
+      if (mode === "online" && isMine(p)) send({ t: "finish" });
+      // first one across wins: the round ends right away
+      if (p.rank === 1) later(endMatch, mode === "online" ? 1800 : 0);
     }
 
-    // Everyone has either crossed or fallen:
-    //  - someone crossed  -> the match is over
-    //  - everyone fell    -> everyone respawns (broken glass stays broken)
+    // The first player across wins (see finish). Here: if EVERYONE has fallen (and it isn't
+    // free play, where you respawn on your own), everyone respawns. Broken glass stays broken.
     function checkAllDone() {
-      if (done || respawnPending || !order.length) return;
-      if (rules.freePlay) {
-        // free play ends when everyone still here has crossed (or the clock runs out)
-        if (order.every((p) => p.finished || p.left)) later(endMatch, 1500);
-        return;
-      }
-      if (!order.every((p) => p.out || p.finished)) return;
-      if (order.some((p) => p.finished)) return later(endMatch, 1500);
+      if (done || respawnPending || !order.length || rules.freePlay) return;
+      if (order.some((p) => p.finished)) return; // already won; the round is ending
+      if (!order.every((p) => p.out || p.left)) return;
+      if (order.every((p) => p.left)) return later(endMatch, 1500);
       respawnPending = true;
       later(respawnAll, 1800);
     }
@@ -773,10 +782,10 @@ Hub.register({
           say(`You made it across with ${left} player${left === 1 ? "" : "s"} left!`, "good");
         } else say("Everyone fell. The bridge wins.", "bad");
       } else {
-        const iSurvived = survivors.some(isMine);
-        if (iSurvived) api.addScore(100);
-        say(survivors.length ? `Survivors: ${survivors.map((p) => p.name).join(", ")}` : "Nobody survived. The bridge wins.",
-          iSurvived ? "good" : "bad");
+        const winner = order.find((p) => p.rank === 1);
+        const iWon = winner && isMine(winner);
+        if (iWon) api.addScore(100);
+        say(winner ? `🏆 ${iWon ? "You win" : winner.name + " wins"}!` : "Nobody made it across. The bridge wins.", iWon ? "good" : "bad");
         if (room) room.update({ inGame: false }); // friends can join before the rematch
       }
       input.showTouch(false);
@@ -792,12 +801,15 @@ Hub.register({
       const card = el("div", "gb3-card");
       card.append(el("h2", "", "Results"));
       const ul = el("ul", "gb3-list");
-      const medal = (r) => ["🥇", "🥈", "🥉"][r - 1] || "✅";
-      [...order].sort((a, b) => (a.rank || 99) - (b.rank || 99)).forEach((p) => {
+      // winner first, then everyone else by how far they got
+      [...order].sort((a, b) => (a.rank || 99) - (b.rank || 99) || b.best - a.best).forEach((p) => {
         const mine = isMine(p) ? " (you)" : "";
-        const result = p.finished ? ` ${ordinal(p.rank)} · ${clockText(p.finishTime)}` : rules.freePlay ? " didn't finish" : " fell";
-        const falls = rules.freePlay && p.falls ? ` · ${p.falls} fall${p.falls === 1 ? "" : "s"}` : "";
-        ul.append(el("li", "", `${p.finished ? medal(p.rank) : "💀"} ${p.name}${mine}${result}${falls}`));
+        let line;
+        if (p.rank === 1) line = `🏆 ${p.name}${mine} won · ${clockText(p.finishTime)}`;
+        else if (p.finished) line = `✅ ${p.name}${mine} also crossed (${ordinal(p.rank)})`;
+        else line = `${p.out ? "💀" : "🏳"} ${p.name}${mine} · ${p.best >= 0 ? `reached row ${p.best + 1} of ${STEPS}` : "didn't reach the glass"}`;
+        if (rules.freePlay && p.falls) line += ` · ${p.falls} fall${p.falls === 1 ? "" : "s"}`;
+        ul.append(el("li", "", line));
       });
       card.append(ul);
       const here = roomPlayers; // everyone in the room now, oldest first
@@ -845,6 +857,7 @@ Hub.register({
       const live = !p.out && countdown <= 0 && !done;
       const mv = live ? input.move() : { x: 0, y: 0 };
       const wantJump = input.jump() && live;
+      if (input.push() && live && time - (p.lastPush || -9) > PUSH_COOLDOWN) doPush(p);
       const P = p.mesh.position;
 
       if (wantJump && p.onGround) {
@@ -935,6 +948,42 @@ Hub.register({
       }
     }
 
+    // PUSH: shove whoever is in front of you. Online, their game applies the shove to them.
+    function doPush(p) {
+      p.lastPush = time;
+      startPushAnim(p);
+      tone(260, 0.12, 0.08, "triangle");
+      const P = p.mesh.position;
+      const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
+      const hits = [];
+      for (const q of order) {
+        if (q === p || q.out || q.left || q.finished || !q.mesh.visible) continue;
+        const Q = q.mesh.position;
+        if (Math.abs(Q.y - P.y) > 1.2) continue;
+        const dx = Q.x - P.x, dz = Q.z - P.z;
+        const d = Math.hypot(dx, dz);
+        if (d > PUSH_RANGE || d < 1e-3 || (dx * fx + dz * fz) / d < 0.3) continue; // too far / not in front
+        const r2 = (v) => Math.round(v * 100) / 100;
+        hits.push({ to: q.id, x: r2((dx / d) * PUSH_FORCE), z: r2((dz / d) * PUSH_FORCE) });
+      }
+      if (hits.length) tone(150, 0.15, 0.12, "square");
+      send({ t: "push", hits });
+    }
+    function startPushAnim(p) {
+      p.pushT = 0.5;
+      const kk = p.mesh.userData.kk;
+      if (kk) kk.play("Melee_Unarmed_Attack_Punch_A", { once: true, speed: 1.5, fade: 0.08 });
+    }
+    function getPushed(x, z) {
+      const m = me();
+      if (!m || m.out || m.finished) return;
+      m.vel.x += x;
+      m.vel.z += z;
+      m.vel.y = Math.max(m.vel.y, 4.5); // knocked off your feet
+      m.onGround = false;
+      tone(140, 0.15, 0.12, "square");
+    }
+
     function stepRemote(p, dt) {
       if (!p.target) { animate(p, 0, false, dt); return; }
       const P = p.mesh.position;
@@ -966,7 +1015,14 @@ Hub.register({
         if (!p.target) p.target = new THREE.Vector3();
         p.target.set(data.x, data.y, data.z);
         p.targetRy = data.ry;
-      } else if (data.t === "step") markStepped(data.row, data.side);
+      } else if (data.t === "step") {
+        markStepped(data.row, data.side);
+        p.best = Math.max(p.best, data.row); // how far they got (for results)
+      } else if (data.t === "push") {
+        startPushAnim(p);
+        const hit = (data.hits || []).find((h) => h.to === room.id);
+        if (hit) getPushed(hit.x, hit.z);
+      }
       else if (data.t === "break") breakPanel(data.row, data.side);
       else if (data.t === "fell") eliminate(p);
       else if (data.t === "respawn") respawnOne(p);
@@ -1109,7 +1165,7 @@ Hub.register({
 
       card.append(optionsBox(null), solo, el("label", "", "Play online with friends"), host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "gb3-help", "Keyboard: WASD / arrows + Space · Controller: stick + A/✕ · Phone: on-screen joystick + JUMP"));
+        el("div", "gb3-help", "Keyboard: WASD / arrows, Space jump, F push · Controller: stick, A/✕ jump, X/□ push · Phone: joystick, JUMP, PUSH"));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;

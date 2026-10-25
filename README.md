@@ -30,6 +30,7 @@ shared/             ← shared by everyone:
   models.js         ←   animated KayKit 3D characters
   models/           ←   the KayKit character + animation files
   lib/              ←   three.js (3D), its model loader, and supabase-js
+assets/kaykit/      ← the FULL KayKit art packs (source files; the game doesn't load these)
 minigames/
   snake/            ← one folder per mini-game
   reaction/
@@ -59,7 +60,7 @@ minigames/
 |------|--------|--------|
 | Snake | Player 1 | playable |
 | Reaction Time | Player 2 | playable |
-| Glass Bridge (3D, online, KayKit characters) | ilovefree1s | playable |
+| Glass Bridge (3D, online, KayKit characters, push, first across wins) | ilovefree1s | playable |
 
 ## 3D
 

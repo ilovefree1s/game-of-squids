@@ -23,6 +23,8 @@ const Hub = (() => {
 
     $("stage").hidden = true;
     $("back").hidden = true;
+    $("fs").hidden = true;
+    setFullscreen(false);
     $("menu").hidden = false;
     $("game").innerHTML = "";
 
@@ -44,6 +46,7 @@ const Hub = (() => {
     $("menu").hidden = true;
     $("stage").hidden = false;
     $("back").hidden = false;
+    $("fs").hidden = false;
     $("game-name").textContent = game.name || game.id;
     setScore(0);
 
@@ -77,6 +80,26 @@ const Hub = (() => {
     current = { game, cleanup: game.start(container, api) };
   }
 
+  // Full screen: the game area fills the whole screen. Uses the browser's real full screen where
+  // it's allowed (computers, Android); iPhones fall back to filling the page.
+  function setFullscreen(on) {
+    const was = document.body.classList.contains("gos-fs");
+    document.body.classList.toggle("gos-fs", on);
+    $("fs").textContent = on ? "✕ Exit full screen" : "⛶ Full screen";
+    try {
+      if (on && !document.fullscreenElement && document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else if (!on && document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch {}
+    if (was !== on) {
+      // let games resize their canvas
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 60);
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 400);
+    }
+  }
+
   let score = 0;
   function setScore(n) {
     score = n;
@@ -92,6 +115,11 @@ const Hub = (() => {
 
   document.addEventListener("DOMContentLoaded", () => {
     $("back").onclick = showMenu;
+    $("fs").onclick = () => setFullscreen(!document.body.classList.contains("gos-fs"));
+    // leaving browser full screen (Esc) also leaves our full screen layout
+    document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement && document.body.classList.contains("gos-fs")) setFullscreen(false);
+    });
   });
 
   return { register, showMenu };
