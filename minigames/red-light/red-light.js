@@ -7,7 +7,12 @@
 //   shot by the snipers. Cross the finish line before the 5-minute clock runs out, or you're out.
 //   Her song changes speed every time: sometimes slow, sometimes rushed, sometimes both.
 //
-// STEP 1 (this version): solo. STEP 2: online (up to 8 players). STEP 3: CPU players.
+// SOLO: you alone (optionally with practice dummies). ONLINE: up to 8 players in a lobby.
+//   The host's game runs the doll (her timing and songs) and tells everyone else; each player's own device
+//   decides whether *they* moved on red, so internet lag never gets you shot.
+//   SECRET ALLIANCES (lobby only): ask any player to ally. Only they see the request; if they confirm,
+//   each of you sees the other's name in green. Nobody else knows. Alliances reset after every game.
+// LATER: CPU players.
 //
 // Art: KayKit characters/props (shared/models.js). The doll, stage, music and sounds are original,
 // built in code (no image or sound files).
@@ -53,6 +58,8 @@ Hub.register({
     const PUSH_COOLDOWN = 0.8; // seconds between pushes
     const KNOCK_DECAY = 7; // how fast a sprint bump wears off
     const DUMMIES = 4; // practice dummies (solo testing)
+    const MAX_ONLINE = 8;
+    const SEND_EVERY = 0.1; // online: seconds between position updates
 
     const FIELD_HALF = 18; // the field is 36 wide
     const START_Z = 0; // start line
@@ -148,6 +155,21 @@ Hub.register({
       .rl-help { font-size: .82rem; color: var(--muted); line-height: 1.5; }
       .rl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .rl-list li { background: #14141f; padding: 6px 10px; border-radius: 6px; }
+      .rl-row { display: flex; align-items: center; gap: 10px; }
+      .rl-row .who { flex: 1; min-width: 0; }
+      .rl-row .who b { display: block; }
+      .rl-row .who small { color: var(--muted); }
+      .rl-row.ally .who b { color: #3ddc84; }
+      .rl-face { width: 42px; height: 42px; border-radius: 50%; background: #2a2a40; flex: none; object-fit: cover; }
+      .rl-card .rl-allybtn { flex: none; padding: 5px 12px; font-size: .85rem; background: #3a3a55; color: var(--text); }
+      .rl-tag { flex: none; font-size: .8rem; font-weight: 700; color: var(--muted); }
+      .rl-tag.ally { color: #3ddc84; }
+      .rl-asks { background: #2b1f33; border: 1px solid #6b3a7a; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+      .rl-asks .rl-row button { flex: none; padding: 5px 12px; font-size: .85rem; }
+      .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
+      .rl-note.bad { color: #ff5c5c; }
+      .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
+      .rl-player.me { box-shadow: 0 0 0 2px #ffcc33 inset; }
       .rl-check { display: flex; align-items: flex-start; gap: 10px; font-size: .88rem; color: var(--text) !important; cursor: pointer; }
       .rl-card .rl-check input { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: #ff3b5c; }
     `;
@@ -588,22 +610,29 @@ Hub.register({
       return { times, lens, kind, base: rand(500, 560), total: times[9] + lens[9] };
     }
 
-    function setPhase(p, len = 0) {
+    // Online, only the leader (the host) moves the doll from one phase to the next and tells everyone.
+    const leader = () => mode !== "online" || (room && roomPlayers.length > 0 && roomPlayers[0].id === room.id);
+
+    function setPhase(p, len = 0, data = null) {
       phase = p;
       phaseT = 0;
       phaseLen = len;
       setEyes(p === "watch");
+      if (p === "watch") chantEl.hidden = true;
       if (p === "sing") {
-        chant = makeChant();
+        chant = data || makeChant();
         sungUpTo = -1;
         chantEl.hidden = false;
         koSpans.forEach((s) => s.classList.remove("on"));
         roSpans.forEach((s) => s.classList.remove("on"));
       }
       if (p === "turn") whirSound(TURN_TO);
-      if (p === "away") whirSound(TURN_AWAY);
+      if (p === "away") { whirSound(TURN_AWAY); eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; }); }
       if (p === "watch") lockOnSound();
       renderLight();
+      if (mode === "online" && leader() && ["away", "sing", "turn", "watch"].includes(p)) {
+        send({ t: "phase", ph: p, len, chant: p === "sing" ? chant : null, clock: clockLeft });
+      }
     }
 
     function renderLight() {
@@ -619,7 +648,7 @@ Hub.register({
       if (phase === "away") { // turning her back to the players
         const t = clamp(phaseT / TURN_AWAY, 0, 1);
         setDoll(Math.PI * smooth(t), Math.PI * smooth(Math.min(1, t * 1.3)));
-        if (t >= 1) setPhase("sing");
+        if (t >= 1 && leader()) setPhase("sing");
       } else if (phase === "sing") {
         while (sungUpTo < 9 && phaseT >= chant.times[sungUpTo + 1]) {
           sungUpTo++;
@@ -627,11 +656,11 @@ Hub.register({
           koSpans[sungUpTo].classList.add("on");
           roSpans[sungUpTo].classList.add("on");
         }
-        if (phaseT >= chant.total + 0.05) setPhase("turn", TURN_TO);
+        if (phaseT >= chant.total + 0.05 && leader()) setPhase("turn", TURN_TO);
       } else if (phase === "turn") { // spinning around: the head snaps first
         const t = clamp(phaseT / TURN_TO, 0, 1);
         setDoll(Math.PI * (1 - smooth(t)), Math.PI * (1 - smooth(Math.min(1, t * 1.5))));
-        if (t >= 1) { setPhase("watch", rand(WATCH[0], WATCH[1])); chantEl.hidden = true; }
+        if (t >= 1 && leader()) setPhase("watch", rand(WATCH[0], WATCH[1]));
       } else if (phase === "watch") {
         // eyes and beam sweep across the field
         const s = Math.sin(phaseT * 2.4);
@@ -639,10 +668,7 @@ Hub.register({
         beam.rotation.y = s * 0.28;
         scanT -= dt;
         if (scanT <= 0) { scanT = 0.42; scanTick(); }
-        if (phaseT >= phaseLen) {
-          eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; });
-          setPhase("away", TURN_AWAY);
-        }
+        if (phaseT >= phaseLen && leader()) setPhase("away", TURN_AWAY);
       }
     }
     const judging = () => phase === "watch" && phaseT > GRACE;
@@ -796,9 +822,18 @@ Hub.register({
     let done = false;
     let countdown = 0;
     let clockLeft = TIME_LIMIT;
-    let mode = "lobby";
+    let mode = "lobby"; // "lobby" | "solo" | "online"
     let myId = "solo";
     const me = () => order.find((p) => p.id === myId);
+    let room = null; // online room (shared/net.js)
+    let roomPlayers = []; // everyone in the room, oldest first (the first one is the host)
+    let matchId = ""; // online: messages from an older match are ignored
+    const send = (d) => { if (mode === "online" && room) room.send({ ...d, m: matchId }); };
+    // secret alliances (by player id). They only last for one game.
+    const allies = new Set(); // confirmed
+    const asked = new Set(); // I asked them, no answer yet
+    const incoming = new Set(); // they asked me
+    const allied = (p) => allies.has(p.id);
 
     function textTexture(text, w, h, bg, fg, font) {
       return canvasTex(w, h, (g) => {
@@ -842,12 +877,13 @@ Hub.register({
         g.add(body);
         g.userData.body = body;
       }
-      const name = mode === "online" ? p.name : p.num;
+      const name = mode === "online" ? `${p.num} ${p.name}` : p.num;
+      const color = mine ? "#ffcc33" : allied(p) ? "#3ddc84" : "#ffffff"; // you: yellow · your allies: green
       const tag = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: textTexture(name, 256, 64, null, mine ? "#ffcc33" : "#ffffff", "bold 34px sans-serif"), depthTest: false, transparent: true,
+        map: textTexture(name, 384, 64, null, color, "bold 34px sans-serif"), depthTest: false, transparent: true,
       }));
       tag.userData.own = true;
-      tag.scale.set(1.4, 0.35, 1);
+      tag.scale.set(2.1, 0.35, 1);
       tag.position.y = 2.75;
       g.add(tag);
       g.userData.tag = tag;
@@ -857,7 +893,8 @@ Hub.register({
 
     function addPlayer(r, k, n) {
       const p = { ...r, vel: new THREE.Vector3(), knock: new THREE.Vector3(), out: false, dead: false, finished: false,
-        speed: 0, pushT: 0, hitT: 0, lastPush: -9, knocked: {} };
+        speed: 0, pushT: 0, hitT: 0, lastPush: -9, knocked: {},
+        remote: mode === "online" && r.id !== myId, target: null, targetRy: 0 };
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
       p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
@@ -935,11 +972,19 @@ Hub.register({
       else if (P.z < FINISH_Z) finish(p);
     }
 
+    // Another player online: glide toward where their device last said they were.
+    function stepRemote(p, dt) {
+      if (!p.target || p.left) return;
+      const P = p.mesh.position;
+      P.lerp(p.target, Math.min(1, dt * 12));
+      if (!p.dead) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, p.targetRy, dt * 12);
+    }
+
     // Bodies don't overlap. Sprinting into someone knocks them forward.
     function collide(p) {
       const P = p.mesh.position;
       for (const q of order) {
-        if (q === p || q.dead) continue;
+        if (q === p || q.dead || q.left) continue;
         const Q = q.mesh.position;
         let dx = P.x - Q.x, dz = P.z - Q.z;
         const d = Math.hypot(dx, dz);
@@ -961,10 +1006,11 @@ Hub.register({
     function doPush(p) {
       p.lastPush = time;
       p.pushT = 0.45;
+      send({ t: "push" }); // everyone sees the shove
       const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
       let best = null, bd = PUSH_RANGE;
       for (const q of order) {
-        if (q === p || q.dead || q.finished) continue;
+        if (q === p || q.dead || q.finished || q.left) continue;
         const dx = q.mesh.position.x - p.mesh.position.x, dz = q.mesh.position.z - p.mesh.position.z;
         const d = Math.hypot(dx, dz);
         if (d < bd && (dx * fx + dz * fz) / Math.max(d, 0.001) > Math.cos(Math.PI / 3)) { bd = d; best = q; }
@@ -974,6 +1020,12 @@ Hub.register({
     }
 
     function knock(q, dx, dz, power, decay = KNOCK_DECAY) {
+      if (q.remote) { // their own device moves them: tell it
+        send({ t: "knock", to: q.id, dx, dz, power, decay });
+        q.hitT = 0.55;
+        noise(0.12, power > 5 ? 0.22 : 0.1, "lowpass", 500);
+        return;
+      }
       q.knock.x += dx * power;
       q.knock.z += dz * power;
       q.knockDecay = decay;
@@ -990,6 +1042,8 @@ Hub.register({
         let cls = "rl-player";
         if (p.out) cls += " out";
         else if (p.finished) cls += " finished";
+        if (mode === "online" && p.id === myId) cls += " me";
+        else if (allied(p)) cls += " ally";
         const label = mode === "online" ? `${p.num} ${p.name}` : p.num;
         playersEl.append(el("div", cls, (p.finished ? "✓ " : "") + label));
       });
@@ -1015,7 +1069,7 @@ Hub.register({
       p.vel.set(0, 0, 0);
       p.speed = 0;
       renderPlayers();
-      if (p.id === myId) say("She saw you move…", "bad");
+      if (p.id === myId) { say("She saw you move…", "bad"); send({ t: "caught" }); }
       fire(p);
     }
     function hit(p) {
@@ -1032,6 +1086,7 @@ Hub.register({
       p.finishLeft = clockLeft;
       renderPlayers();
       if (p.id === myId) {
+        send({ t: "finish" });
         say("You made it across! 🎉", "good");
         tone(660, 0.15, 0.12); tone(880, 0.3, 0.12, "sine", 0.15);
       }
@@ -1039,9 +1094,11 @@ Hub.register({
     }
     function checkEnd() {
       if (done || !started) return;
-      if (order.every((p) => p.dummy || p.finished || p.dead)) endMatch();
+      if (order.every((p) => p.dummy || p.left || p.finished || p.dead)) endMatch();
     }
     function timeUp() {
+      if (phase === "over") return;
+      if (mode === "online" && leader()) send({ t: "timeup" });
       setPhase("over");
       setDoll(0, 0);
       setEyes(true);
@@ -1066,10 +1123,46 @@ Hub.register({
         say(`You survived Red Light, Green Light with ${clockText(bonus)} to spare.`, "good");
       } else say("You didn't make it.", "bad");
       later(() => musicBox(true, 0.26), 800);
-      later(() => { musicBox(false); api.gameOver(); }, 5200);
+      if (mode !== "online") { later(() => { musicBox(false); api.gameOver(); }, 5200); return; }
+      // online: back to the lobby with the results; alliances don't carry over
+      results = [...order].filter((p) => !p.dummy)
+        .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0))
+        .map((p) => ({ name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft }));
+      allies.clear(); asked.clear(); incoming.clear();
+      if (room) room.update({ inGame: false });
+      later(() => { musicBox(false); renderRoom(roomPlayers); }, 4500);
+    }
+    let results = null; // the last online game's results, shown in the lobby
+
+    // Clear the field for the next game.
+    function resetMatch() {
+      timeouts.forEach(clearTimeout);
+      timeouts.length = 0;
+      musicBox(false);
+      order.forEach((p) => {
+        scene.remove(p.mesh);
+        p.mesh.traverse((o) => {
+          if (!o.userData.own) return; // KayKit parts are shared by every copy
+          if (o.geometry && o.geometry !== blobGeo) o.geometry.dispose();
+          if (o.material && o.material !== blobMat) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+        });
+      });
+      order = [];
+      bolts.forEach((b) => scene.remove(b.obj));
+      bolts.length = 0;
+      started = done = false;
+      phase = "idle";
+      setEyes(false);
+      setDoll(0, 0);
+      chantEl.hidden = true;
+      lightEl.hidden = true;
+      countEl.textContent = "";
+      say("");
+      api.setScore(0);
     }
 
     function startMatch(roster) {
+      if (order.length) resetMatch();
       order = roster.map((r, k) => addPlayer(r, k, roster.length));
       spawnSnipers();
       started = true;
@@ -1089,13 +1182,17 @@ Hub.register({
     }
 
     // load everything the match needs (max ~10s), then start
-    function beginMatch(roster) {
+    let loadingMatch = false;
+    function beginMatch(roster, id = "") {
+      if (loadingMatch) return;
+      loadingMatch = true;
+      matchId = id;
       lobby.innerHTML = "";
       const card = el("div", "rl-card");
       card.append(el("h2", "", "Loading…"));
       lobby.append(card);
       lobby.hidden = false;
-      const go = () => startMatch(roster);
+      const go = () => { loadingMatch = false; startMatch(roster); };
       if (!Models.available()) return go();
       const need = Promise.allSettled([
         Models.loadAll([...roster.map((r) => r.char), ...SNIPER_CHARS], 10000),
@@ -1148,6 +1245,7 @@ Hub.register({
       const solo = el("button", "", "Play solo");
       solo.onclick = () => {
         audio();
+        lobbyListEl = null;
         mode = "solo";
         myId = "solo";
         const nums = randomNumbers(1 + (dumBox.checked ? DUMMIES : 0));
@@ -1155,20 +1253,307 @@ Hub.register({
         nums.slice(1).forEach((num, i) => roster.push({ id: "dummy" + i, name: "Dummy", num, char: "tracksuit", dummy: true }));
         beginMatch(roster);
       };
-      const online = el("button", "alt", "Play online (coming next)");
-      online.disabled = true;
       const controls = el("button", "alt", "🎮 Phone controls layout");
-      controls.onclick = () => { lobby.hidden = true; input.editLayout(() => showMenu()); };
-      card.append(dumRow, solo, online, controls,
+      controls.onclick = () => { lobby.hidden = true; lobbyListEl = null; input.editLayout(() => showMenu()); };
+
+      // online
+      const nameIn = el("input");
+      nameIn.id = "rl-name";
+      nameIn.value = savedName();
+      nameIn.placeholder = "e.g. Cougar";
+      nameIn.maxLength = 14;
+      nameIn.addEventListener("keydown", (e) => e.stopPropagation()); // typing shouldn't move anyone
+      const note = el("div", "rl-note bad");
+      const getName = () => {
+        const n = nameIn.value.trim().slice(0, 14);
+        if (!n) { note.textContent = "Type your name first."; nameIn.focus(); return null; }
+        try { localStorage.setItem("gos:name", n); } catch {}
+        return n;
+      };
+      const host = el("button", "", "Host a lobby");
+      host.onclick = () => { const n = getName(); if (n) enterRoom(Net.newCode(), n); };
+      lobbyListEl = el("ul", "rl-list");
+      lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
+
+      card.append(dumRow, solo, el("label", "", "Play online · your name"), nameIn, host,
+        el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: double-tap a direction and hold it. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
       lobby.append(card);
+      if (typeof Net === "undefined" || typeof supabase === "undefined") {
+        host.disabled = true;
+        note.textContent = "Online play unavailable (Supabase library didn't load).";
+        lobbyListEl = null;
+        return;
+      }
+      try {
+        if (!lobbyFeed) lobbyFeed = Net.lobbies("red-light", renderLobbyList);
+        renderLobbyList(lobbyFeed.list());
+      } catch (err) {
+        note.textContent = "Online play unavailable: " + err.message;
+      }
+    }
+    const savedName = () => { try { return localStorage.getItem("gos:name") || ""; } catch { return ""; } };
+
+    // ---------- online: open lobbies ----------
+    let lobbyFeed = null; // live list of open lobbies
+    let lobbyListEl = null; // the list on the menu, while it's showing
+    let myName = "";
+    let myNum = "";
+    function renderLobbyList(list) {
+      if (!lobbyListEl || room) return;
+      lobbyListEl.innerHTML = "";
+      const open = list.filter((l) => l.id !== Net.id).sort((a, b) => (a.inGame ? 1 : 0) - (b.inGame ? 1 : 0) || b.count - a.count);
+      if (!open.length) { lobbyListEl.append(el("li", "rl-note", "No open lobbies right now. Host one!")); return; }
+      open.forEach((l) => {
+        const li = el("li", "rl-row");
+        const full = l.count >= MAX_ONLINE;
+        const info = el("div", "who");
+        info.append(el("b", "", `${l.host}'s lobby`),
+          el("small", "", `${l.count}/${MAX_ONLINE} players · ${l.inGame ? "playing now (you'll join next game)" : "waiting to start"}`));
+        const btn = el("button", "", full ? "Full" : "Join");
+        btn.disabled = full;
+        btn.onclick = () => lobbyListEl && lobbyListEl.join(l.code);
+        li.append(info, btn);
+        lobbyListEl.append(li);
+      });
+    }
+    function advertiseLobby(list) { // the host shows the lobby in everyone's list
+      if (!lobbyFeed || !room) return;
+      if (!(list.length && list[0].id === room.id)) return lobbyFeed.hide();
+      lobbyFeed.advertise({ code: room.code, host: myName, count: Math.min(list.length, MAX_ONLINE), inGame: list.some((p) => p.inGame) });
+    }
+    function leaveRoom() {
+      if (lobbyFeed) lobbyFeed.hide();
+      if (room) room.leave();
+      room = null;
+      roomPlayers = [];
+      allies.clear(); asked.clear(); incoming.clear();
+    }
+
+    let roomNote = "", roomNoteBad = false;
+    function enterRoom(code, name) {
+      mode = "online";
+      myName = name;
+      myNum = randomNumbers(1)[0];
+      results = null;
+      lobbyListEl = null;
+      roomPlayers = [];
+      roomNote = "Connecting…";
+      roomNoteBad = false;
+      try {
+        room = Net.joinRoom("red-light", code, name, {
+          onPlayers: onRoomPlayers,
+          onMessage: onRoomMessage,
+          onStatus: (st) => {
+            if (started && !done) return;
+            if (st === "SUBSCRIBED") { roomNote = "Connected."; roomNoteBad = false; renderRoom(roomPlayers); }
+            else if (st === "CHANNEL_ERROR" || st === "TIMED_OUT") {
+              roomNote = "Couldn't connect to the online server. Check your internet."; roomNoteBad = true; renderRoom(roomPlayers);
+            }
+          },
+        }, { char: myChar, num: myNum });
+        myId = room.id;
+      } catch (err) {
+        roomNote = "Online play failed to start: " + err.message; roomNoteBad = true;
+      }
+      renderRoom([]);
+    }
+
+    function onRoomPlayers(list) {
+      roomPlayers = list;
+      advertiseLobby(list);
+      // same number as someone who joined before me? pick another
+      const mineAt = list.findIndex((p) => room && p.id === room.id);
+      if (mineAt > 0 && list.slice(0, mineAt).some((p) => p.num === myNum)) {
+        myNum = randomNumbers(1)[0];
+        room.update({ num: myNum });
+      }
+      const here = new Set(list.map((p) => p.id));
+      [allies, asked, incoming].forEach((set) => [...set].forEach((id) => { if (!here.has(id)) set.delete(id); }));
+      if (!started || done) return renderRoom(list);
+      order.forEach((p) => { // someone left mid-game
+        if (!p.left && !here.has(p.id)) {
+          p.left = true;
+          p.mesh.visible = false;
+          if (!p.finished && !p.dead) { p.out = true; say(`${p.name} left the game.`, "bad"); }
+          renderPlayers();
+          checkEnd();
+        }
+      });
+    }
+
+    function onRoomMessage(data, from) {
+      // secret alliances (lobby). Messages go to the whole room; everyone but the named player ignores them.
+      if (data.t === "ally-ask" && data.to === myId) {
+        if (asked.has(from)) { asked.delete(from); allies.add(from); room.send({ t: "ally-yes", to: from }); } // we both asked
+        else if (!allies.has(from)) incoming.add(from);
+        return renderRoom(roomPlayers);
+      }
+      if (data.t === "ally-yes" && data.to === myId) {
+        if (asked.has(from)) { asked.delete(from); allies.add(from); tone(880, 0.15, 0.08); }
+        return renderRoom(roomPlayers);
+      }
+      if (data.t === "start") {
+        if (started && !done) return;
+        if (!data.roster.some((r) => r.id === myId)) { roomNote = "The game started without you (room full)."; roomNoteBad = true; return renderRoom(roomPlayers); }
+        incoming.clear(); asked.clear(); // unanswered requests expire when the game starts
+        room.update({ inGame: true });
+        return beginMatch(data.roster, data.m);
+      }
+      if (!started || data.m !== matchId) return; // not for this game
+      const p = order.find((q) => q.id === from);
+      if (data.t === "phase") {
+        if (leader()) return;
+        if (countdown > 0) { countdown = 0; countEl.textContent = ""; musicBox(false); say(""); }
+        clockLeft = data.clock;
+        setPhase(data.ph, data.len, data.chant);
+      } else if (data.t === "timeup") {
+        if (!leader()) { clockLeft = 0; timeUp(); }
+      } else if (!p) {
+        return;
+      } else if (data.t === "pos") {
+        if (!p.target) p.target = new THREE.Vector3();
+        p.target.set(data.x, 0, data.z);
+        p.targetRy = data.ry;
+        p.speed = data.sp;
+      } else if (data.t === "push") p.pushT = 0.45;
+      else if (data.t === "knock") {
+        const q = order.find((o) => o.id === data.to);
+        if (!q) return;
+        if (q.id === myId) knock(q, data.dx, data.dz, data.power, data.decay); // I got shoved
+        else q.hitT = 0.55;
+      } else if (data.t === "caught") caught(p);
+      else if (data.t === "finish") finish(p);
+    }
+
+    // The lobby: players, secret alliances, results of the last game, Start (host).
+    function renderRoom(list) {
+      if (started && !done) return;
+      if (mode !== "online") return;
+      lobby.innerHTML = "";
+      lobby.hidden = false;
+      const card = el("div", "rl-card");
+      const hostP = list[0];
+      card.append(el("h2", "", `${hostP ? hostP.name : myName}'s lobby`));
+      if (results) {
+        const ul = el("ul", "rl-list");
+        results.forEach((r) => ul.append(el("li", "", `${r.ok ? "✅" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}` +
+          (r.ok ? ` · made it with ${clockText(Math.ceil(r.left || 0))} left` : " · eliminated"))));
+        card.append(el("label", "", "Last game"), ul);
+      }
+      // someone asked me to ally
+      const asks = list.filter((p) => incoming.has(p.id));
+      if (asks.length) {
+        const box = el("div", "rl-asks");
+        box.append(el("b", "", "🤫 Secret alliance requests"));
+        asks.forEach((p) => {
+          const row = el("div", "rl-row");
+          const yes = el("button", "", "Confirm");
+          yes.onclick = () => { incoming.delete(p.id); allies.add(p.id); room.send({ t: "ally-yes", to: p.id }); renderRoom(roomPlayers); };
+          const no = el("button", "alt", "Ignore");
+          no.onclick = () => { incoming.delete(p.id); renderRoom(roomPlayers); };
+          row.append(face(p.char), el("div", "who", `${p.num} ${p.name} wants to ally with you`), yes, no);
+          box.append(row);
+        });
+        card.append(box);
+      }
+      const inGame = list.some((p) => p.inGame);
+      const ul = el("ul", "rl-list");
+      list.slice(0, MAX_ONLINE).forEach((p, i) => {
+        const mine = room && p.id === room.id;
+        const li = el("li", "rl-row" + (allies.has(p.id) ? " ally" : ""));
+        const who = el("div", "who");
+        who.append(el("b", "", `${p.num || "···"} ${p.name}${mine ? " (you)" : ""}${i === 0 ? " 👑" : ""}`),
+          el("small", "", Models.available() && p.char ? Models.byId(p.char).label : ""));
+        li.append(face(p.char), who);
+        if (!mine) {
+          if (allies.has(p.id)) li.append(el("span", "rl-tag ally", "Ally"));
+          else if (asked.has(p.id)) li.append(el("span", "rl-tag", "Asked…"));
+          else if (!inGame) {
+            const b = el("button", "rl-allybtn", "🤝 Ally?");
+            b.onclick = () => {
+              if (incoming.has(p.id)) { incoming.delete(p.id); allies.add(p.id); room.send({ t: "ally-yes", to: p.id }); }
+              else { asked.add(p.id); room.send({ t: "ally-ask", to: p.id }); }
+              renderRoom(roomPlayers);
+            };
+            li.append(b);
+          }
+        }
+        ul.append(li);
+      });
+      card.append(el("label", "", `Players (${Math.min(list.length, MAX_ONLINE)}/${MAX_ONLINE}) · alliances are secret: only the player you ask sees it`), ul);
+      const myIndex = list.findIndex((p) => room && p.id === room.id);
+      const iAmHost = myIndex === 0;
+      let note = roomNote, bad = roomNoteBad;
+      if (inGame) { note = "A game is running in this lobby. You'll join the next one."; bad = false; }
+      else if (myIndex >= MAX_ONLINE) { note = `Room is full (${MAX_ONLINE} players).`; bad = true; }
+      else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
+      if (iAmHost && !inGame) {
+        const n = Math.min(list.length, MAX_ONLINE);
+        const startBtn = el("button", "", results ? `Play again (${n} player${n === 1 ? "" : "s"})` : n > 1 ? `Start (${n} players)` : "Start (just you)");
+        startBtn.onclick = () => hostStart(list);
+        card.append(startBtn);
+      }
+      const leave = el("button", "alt", "Leave lobby");
+      leave.onclick = () => { leaveRoom(); resetMatch(); results = null; mode = "lobby"; myId = "solo"; showMenu(); };
+      card.append(el("div", "rl-note" + (bad ? " bad" : ""), note), leave);
+      lobby.append(card);
+    }
+
+    function hostStart(list) {
+      const roster = list.slice(0, MAX_ONLINE).map((p) => ({ id: p.id, name: p.name, num: p.num || randomNumbers(1)[0], char: p.char || "tracksuit" }));
+      const m = Math.random().toString(36).slice(2, 10);
+      room.send({ t: "start", m, roster });
+      room.update({ inGame: true });
+      incoming.clear(); asked.clear();
+      beginMatch(roster, m);
+    }
+
+    // a small picture of a character's face, for the lobby (made once per character)
+    const faces = {};
+    let faceRenderer = null;
+    function face(charId) {
+      const img = el("img", "rl-face");
+      img.alt = "";
+      const id = Models.byId(charId || "tracksuit").id;
+      if (faces[id]) { img.src = faces[id]; return img; }
+      if (!Models.available()) return img;
+      Models.load(id).then(() => {
+        if (!faces[id]) faces[id] = drawFace(id);
+        if (faces[id]) img.src = faces[id];
+      }).catch(() => {});
+      return img;
+    }
+    function drawFace(id) {
+      try {
+        if (!faceRenderer) {
+          faceRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+          faceRenderer.setSize(96, 96);
+          faceRenderer.outputEncoding = THREE.sRGBEncoding;
+        }
+        const sc = new THREE.Scene();
+        sc.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.1));
+        const l = new THREE.DirectionalLight(0xffffff, 0.8); l.position.set(1, 2, -3); sc.add(l);
+        const c = Models.spawn(id);
+        if (!c) return null;
+        sc.add(c.root);
+        c.update(0.01);
+        sc.updateMatrixWorld(true);
+        const h = c.bone("head") ? c.bone("head").getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(0, 1.6, 0);
+        const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
+        cam.position.set(h.x, h.y + 0.2, h.z - 1.5); // characters face -Z: look at them from the front
+        cam.lookAt(h.x, h.y + 0.15, h.z);
+        faceRenderer.render(sc, cam);
+        return faceRenderer.domElement.toDataURL("image/png");
+      } catch { return null; }
     }
 
     // ---------- main loop ----------
     const camPos = new THREE.Vector3(0, 5, START_Z + 9);
     const camLook = new THREE.Vector3(0, 2, START_Z - 10);
     let time = 0;
+    let sendT = 0;
 
     function update(dt) {
       time += dt;
@@ -1184,11 +1569,11 @@ Hub.register({
             buzzer();
             later(() => (countEl.textContent = ""), 700);
             say(""); // the how-to line only shows during the countdown
-            setPhase("away", TURN_AWAY);
+            if (leader()) setPhase("away", TURN_AWAY); // online: everyone else waits for the host's doll
           }
         } else if (phase !== "over") {
           clockLeft -= dt;
-          if (clockLeft <= 0) { clockLeft = 0; timeUp(); }
+          if (clockLeft <= 0) { clockLeft = 0; if (leader()) timeUp(); }
         }
       }
       if (phase !== "idle" && phase !== "pre" && phase !== "over") updateDoll(dt);
@@ -1198,7 +1583,16 @@ Hub.register({
       for (const p of order) {
         if (p === mine) stepBody(p, dt, true);
         else if (p.dummy) stepBody(p, dt, false);
+        else if (p.remote) stepRemote(p, dt);
         animate(p, dt);
+      }
+      if (mode === "online" && mine && started && !done) { // tell everyone where I am
+        sendT -= dt;
+        if (sendT <= 0) {
+          sendT = SEND_EVERY;
+          const P = mine.mesh.position;
+          send({ t: "pos", x: +P.x.toFixed(2), z: +P.z.toFixed(2), ry: +mine.mesh.rotation.y.toFixed(2), sp: +mine.speed.toFixed(2) });
+        }
       }
       // snipers turn to their target, then back to watching the field
       snipers.forEach((sn) => {
@@ -1245,6 +1639,9 @@ Hub.register({
       try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
       window.removeEventListener("resize", resize);
       input.destroy();
+      leaveRoom();
+      if (lobbyFeed) lobbyFeed.stop();
+      if (faceRenderer) faceRenderer.dispose();
       scene.traverse((o) => {
         if (o.userData && o.userData.kk) return;
         if (o.geometry && !o.isSkinnedMesh) o.geometry.dispose();
