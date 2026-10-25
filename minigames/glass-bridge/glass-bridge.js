@@ -4,9 +4,13 @@
 // SOLO:   3 players, one at a time. When one falls, the next starts from the platform.
 // If EVERYONE falls, everyone respawns for another round; broken glass stays broken.
 // The match ends when someone crosses or the 120s clock runs out.
-// ONLINE: create a room, share the 4-letter code, up to 8 friends join.
+// ONLINE: one player hosts a lobby; everyone else picks it from the list of open lobbies (up to 8).
 //         Everyone runs the same bridge at the same time. You can watch each other —
 //         and learn from each other's mistakes. Online, the host can Rematch from the results screen.
+//
+// GAME OPTIONS (solo: you pick; online: the host picks, everyone sees them):
+//   time limit (off / 60 / 90 / 120 / 180s), show safe tiles in green, players bump each other,
+//   free play (respawn instantly when you fall; ends when everyone has crossed or time runs out)
 //
 // Controls (shared/input.js):
 //   Keyboard   WASD / arrows to move, Space to jump
@@ -31,7 +35,7 @@ Hub.register({
     // ---------- settings ----------
     const STEPS = 18;
     const SOLO_PLAYERS = 3;
-    const TIME = 120; // seconds to cross
+    const TIME_CHOICES = [0, 60, 90, 120, 180]; // 0 = no time limit
     const COUNTDOWN = 3; // seconds before the clock starts
     const MAX_ONLINE = 8;
     const ROW_GAP = 2.4;
@@ -64,7 +68,25 @@ Hub.register({
     let started = false;
     let done = false;
     let countdown = 0; // > 0 while counting down
-    let clockLeft = TIME;
+    let clockLeft = 0;
+    let elapsed = 0; // seconds since GO
+    let finishCount = 0;
+
+    // ---------- game options ----------
+    const DEFAULT_OPTS = { time: 120, showSafe: true, bump: true, freePlay: false };
+    let opts = (() => { // what you picked (remembered)
+      try { return { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem("gos:gbOpts") || "{}") }; } catch { return { ...DEFAULT_OPTS }; }
+    })();
+    let rules = { ...opts }; // the rules of the match being played
+    const saveOpts = () => { try { localStorage.setItem("gos:gbOpts", JSON.stringify(opts)); } catch {} };
+    const rulesText = (o) => [
+      o.time ? `${o.time}s limit` : "no time limit",
+      o.showSafe ? "safe tiles shown" : "safe tiles hidden",
+      o.bump ? "bumping on" : "no bumping",
+      o.freePlay ? "free play (instant respawns)" : "respawn when everyone falls",
+    ].join(" · ");
+    const clockText = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+    const ordinal = (n) => n + (["th", "st", "nd", "rd"][(n % 100 - 20) % 10] || ["th", "st", "nd", "rd"][n % 100] || "th");
     const timeouts = [];
     const later = (fn, ms) => timeouts.push(setTimeout(fn, ms));
 
@@ -93,7 +115,7 @@ Hub.register({
       .gb3-player.finished { background: #2f8f4e; }
       .gb3-timer { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 2px 8px #000; }
       .gb3-timer.low { color: var(--bad); }
-      .gb3-msg { position: absolute; left: 0; right: 0; bottom: 16px; padding: 0 170px; pointer-events: none;
+      .gb3-msg { position: absolute; left: 0; right: 0; bottom: 16px; padding: 0 170px; pointer-events: none; white-space: pre-line;
                  font-size: 1.05rem; text-shadow: 0 2px 6px #000; text-align: center; }
       .gb3-msg.bad { color: var(--bad); }
       .gb3-msg.good { color: var(--good); }
@@ -119,6 +141,16 @@ Hub.register({
       .gb3-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
       .gb3-note.bad { color: var(--bad); }
       .gb3-help { font-size: .8rem; color: var(--muted); line-height: 1.5; }
+      .gb3-lobby { overflow: auto; }
+      .gb3-lobby-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .gb3-lobby-row button { flex: none; padding: 6px 14px; }
+      .gb3-card { max-height: 96%; overflow: auto; }
+      .gb3-details summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+      .gb3-opts { display: flex; flex-direction: column; gap: 8px; background: #14141f; padding: 10px 12px;
+                  border-radius: 8px; margin-top: 8px; }
+      .gb3-opt { display: flex; align-items: center; gap: 10px; font-size: .9rem; color: var(--text); cursor: pointer; }
+      .gb3-opt select { flex: 1; padding: 4px 8px; }
+      .gb3-card .gb3-opt input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
       @media (pointer: coarse) { .gb3-msg { padding: 0 12px; bottom: 170px; } }
       @media (max-width: 600px) { .gb3-msg { padding: 0 12px; } .gb3-count { font-size: 4rem; } }
     `;
@@ -444,11 +476,12 @@ Hub.register({
     }
     let lastShown = null;
     function renderTimer() {
-      const s = started ? Math.max(0, Math.ceil(clockLeft)) : "";
+      // with a time limit: counts down; without: counts up
+      const s = !started ? "" : rules.time ? String(Math.max(0, Math.ceil(clockLeft))) : clockText(elapsed);
       if (s === lastShown) return;
       lastShown = s;
       timerEl.textContent = started ? `⏱ ${s}` : "";
-      timerEl.classList.toggle("low", started && clockLeft <= 15);
+      timerEl.classList.toggle("low", started && !!rules.time && clockLeft <= 15);
     }
     function say(text, kind = "") {
       msg.textContent = text;
@@ -505,7 +538,7 @@ Hub.register({
 
     // Download everyone's character first (max ~8s), then start.
     let loadingMatch = false;
-    function beginMatch(safeArr, roster, id = "") {
+    function beginMatch(safeArr, roster, id = "", matchRules = opts) {
       if (loadingMatch) return;
       loadingMatch = true;
       if (Models.available()) {
@@ -515,14 +548,17 @@ Hub.register({
         card.append(el("h2", "", "Loading characters…"));
         lobby.append(card);
       }
-      const go = () => { loadingMatch = false; startMatch(safeArr, roster, id); };
+      const go = () => { loadingMatch = false; startMatch(safeArr, roster, id, matchRules); };
       if (!Models.available()) return go();
       Models.loadAll(roster.map((r) => r.char || "tracksuit")).then(go);
     }
 
     // roster: [{ id, name, num, char }]
-    function startMatch(safeArr, roster, id = "") {
+    function startMatch(safeArr, roster, id = "", matchRules = opts) {
       if (started) resetMatch();
+      rules = { ...DEFAULT_OPTS, ...matchRules };
+      elapsed = 0;
+      finishCount = 0;
       matchId = id;
       safe = safeArr;
       order = roster.map(addPlayer);
@@ -533,12 +569,12 @@ Hub.register({
       started = true;
       lobby.hidden = true;
       countdown = COUNTDOWN;
-      clockLeft = TIME;
+      clockLeft = rules.time;
       input.showTouch(true);
       input.clearJump();
       const touch = navigator.maxTouchPoints > 0;
-      say(touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too",
-        "");
+      say((touch ? "Joystick to move, JUMP to jump." : "WASD / arrows to move · Space to jump · controllers work too") +
+        (mode === "online" ? "\nRules: " + rulesText(rules) : ""), "");
       renderPlayers();
       renderTimer();
     }
@@ -568,6 +604,7 @@ Hub.register({
       const panel = panels[row][side];
       if (panel.stepped || panel.broken) return;
       panel.stepped = true;
+      if (!rules.showSafe) return; // option: you have to remember the path yourself
       panel.mesh.material.color.set(0x8affc1);
       panel.mesh.material.emissive.set(0x0b3a22);
       panel.edges.material.color.set(0x3ddc84);
@@ -593,7 +630,10 @@ Hub.register({
       }
       // now everyone knows the other panel in this row is safe
       const other = panels[row][1 - side];
-      if (!other.stepped) { other.known = true; other.edges.material.color.set(0x3ddc84); }
+      if (!other.stepped) {
+        other.known = true;
+        if (rules.showSafe) other.edges.material.color.set(0x3ddc84);
+      }
     }
 
     function eliminate(p) {
@@ -602,6 +642,13 @@ Hub.register({
       renderPlayers();
       tone(180, 0.6, 0.12, "sawtooth");
       say(`${nameOf(p)} fell!`, "bad");
+      if (rules.freePlay) {
+        // option: respawn right away, no waiting for anyone
+        p.falls = (p.falls || 0) + 1;
+        if (mode === "online" && isMine(p)) send({ t: "fell" });
+        if (mode === "solo" || isMine(p)) later(() => respawnOne(p), 1200);
+        return;
+      }
       if (mode === "online") {
         if (isMine(p)) send({ t: "fell" });
         return checkAllDone();
@@ -616,7 +663,7 @@ Hub.register({
         q.mesh.position.set(0, 0, -1.4);
         q.vel.set(0, 0, 0);
         input.clearJump();
-        say(`Player ${q.num}, your turn. The green-outlined panels are safe.`);
+        say(`Player ${q.num}, your turn.${rules.showSafe ? " The green-outlined panels are safe." : ""}`);
         renderPlayers();
       }, 1500);
     }
@@ -624,8 +671,12 @@ Hub.register({
     function finish(p) {
       if (p.finished || p.out) return;
       p.finished = true;
+      p.rank = ++finishCount;
+      p.finishTime = elapsed;
       renderPlayers();
-      say(`${nameOf(p)} made it across!`, "good");
+      say(mode === "online"
+        ? `${nameOf(p)} finished ${ordinal(p.rank)}! (${clockText(p.finishTime)})`
+        : `${nameOf(p)} made it across! (${clockText(p.finishTime)})`, "good");
       if (isMine(p)) [523, 659, 784, 1046].forEach((f, i) => later(() => tone(f, 0.3, 0.12), i * 120));
       if (mode === "online") {
         if (isMine(p)) send({ t: "finish" });
@@ -639,10 +690,35 @@ Hub.register({
     //  - everyone fell    -> everyone respawns (broken glass stays broken)
     function checkAllDone() {
       if (done || respawnPending || !order.length) return;
+      if (rules.freePlay) {
+        // free play ends when everyone still here has crossed (or the clock runs out)
+        if (order.every((p) => p.finished || p.left)) later(endMatch, 1500);
+        return;
+      }
       if (!order.every((p) => p.out || p.finished)) return;
       if (order.some((p) => p.finished)) return later(endMatch, 1500);
       respawnPending = true;
       later(respawnAll, 1800);
+    }
+
+    // free play: bring one player back to the start
+    function respawnOne(p) {
+      if (done || p.left || p.finished) return;
+      p.out = false;
+      p.mesh.visible = true;
+      p.mesh.rotation.set(0, 0, 0);
+      p.vel.set(0, 0, 0);
+      p.onGround = true;
+      p.target = null;
+      p.lastSent = null;
+      if (mode === "solo") p.mesh.position.set(0, 0, -1.4);
+      else p.mesh.position.copy(spawnSpot(order.indexOf(p)));
+      if (isMine(p)) {
+        input.clearJump();
+        send({ t: "respawn" });
+      }
+      renderPlayers();
+      say(`${nameOf(p)} ${isMine(p) && mode === "online" ? "are" : "is"} back at the start.`);
     }
 
     function respawnAll() {
@@ -687,8 +763,13 @@ Hub.register({
       const survivors = order.filter((p) => p.finished);
       if (mode === "solo") {
         const left = order.filter((p) => !p.out).length;
-        if (survivors.length) {
-          api.addScore(left * 50 + Math.max(0, Math.ceil(clockLeft)));
+        const timeBonus = rules.time ? Math.max(0, Math.ceil(clockLeft)) : 0;
+        if (survivors.length && rules.freePlay) {
+          const falls = me().falls || 0;
+          api.addScore(Math.max(0, 150 - falls * 25) + timeBonus);
+          say(`You made it across in ${clockText(elapsed)} with ${falls} fall${falls === 1 ? "" : "s"}!`, "good");
+        } else if (survivors.length) {
+          api.addScore(left * 50 + timeBonus);
           say(`You made it across with ${left} player${left === 1 ? "" : "s"} left!`, "good");
         } else say("Everyone fell. The bridge wins.", "bad");
       } else {
@@ -711,9 +792,12 @@ Hub.register({
       const card = el("div", "gb3-card");
       card.append(el("h2", "", "Results"));
       const ul = el("ul", "gb3-list");
-      order.forEach((p) => {
+      const medal = (r) => ["🥇", "🥈", "🥉"][r - 1] || "✅";
+      [...order].sort((a, b) => (a.rank || 99) - (b.rank || 99)).forEach((p) => {
         const mine = isMine(p) ? " (you)" : "";
-        ul.append(el("li", "", `${p.finished ? "✅" : "💀"} ${p.num} ${p.name}${mine}${p.finished ? " made it" : " fell"}`));
+        const result = p.finished ? ` ${ordinal(p.rank)} · ${clockText(p.finishTime)}` : rules.freePlay ? " didn't finish" : " fell";
+        const falls = rules.freePlay && p.falls ? ` · ${p.falls} fall${p.falls === 1 ? "" : "s"}` : "";
+        ul.append(el("li", "", `${p.finished ? medal(p.rank) : "💀"} ${p.name}${mine}${result}${falls}`));
       });
       card.append(ul);
       const here = roomPlayers; // everyone in the room now, oldest first
@@ -722,14 +806,17 @@ Hub.register({
       if (newcomers.length) card.append(el("div", "gb3-note", `Joined for the next game: ${newcomers.map((p) => p.name).join(", ")}`));
       if (iAmHost) {
         const n = Math.min(here.length, MAX_ONLINE);
+        card.append(optionsBox(() => { if (room) { room.update({ opts: { ...opts } }); advertiseLobby(roomPlayers); } }, true));
         const again = el("button", "", `Rematch (${n} player${n === 1 ? "" : "s"})`);
         again.onclick = () => hostStart(here);
         card.append(again);
       } else {
+        const hostOpts = here[0] && here[0].opts;
+        if (hostOpts) card.append(el("div", "gb3-note", "Next game: " + rulesText({ ...DEFAULT_OPTS, ...hostOpts })));
         card.append(el("div", "gb3-note", "Waiting for the host 👑 to start a rematch…"));
       }
-      const leave = el("button", "alt", "Leave room");
-      leave.onclick = () => { if (room) room.leave(); room = null; lobby.hidden = true; api.gameOver(); };
+      const leave = el("button", "alt", "Leave lobby");
+      leave.onclick = () => { leaveRoom(); lobby.hidden = true; api.gameOver(); };
       card.append(leave);
       lobby.append(card);
     }
@@ -743,10 +830,11 @@ Hub.register({
         m: Math.random().toString(36).slice(2, 10),
         safe: randomSafe(),
         roster: roster.map((p, i) => ({ id: p.id, name: p.name, num: nums[i], char: p.char || "tracksuit" })),
+        opts: { ...opts },
       };
       room.send(data);
-      room.update({ inGame: true });
-      beginMatch(data.safe, data.roster, data.m);
+      room.update({ inGame: true, opts: { ...opts } });
+      beginMatch(data.safe, data.roster, data.m, data.opts);
     }
 
     // ---------- physics ----------
@@ -796,6 +884,8 @@ Hub.register({
         }
       }
 
+      if (rules.bump && !p.out) bumpOthers(p);
+
       const speed = Math.hypot(p.vel.x, p.vel.z);
       if (speed > 0.3 && !p.out) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, Math.atan2(-p.vel.x, -p.vel.z), dt * 12);
       animate(p, speed, !p.onGround, dt);
@@ -812,6 +902,35 @@ Hub.register({
           p.lastSent = P.clone();
           const r2 = (v) => Math.round(v * 100) / 100;
           send({ t: "pos", x: r2(P.x), y: r2(P.y), z: r2(P.z), ry: r2(p.mesh.rotation.y) });
+        }
+      }
+    }
+
+    // option: players are solid and bounce off each other. Run into someone fast enough
+    // and you shove them (online, their game applies the push to their own player).
+    const BODY = 0.75; // how close two players can get
+    function bumpOthers(p) {
+      const P = p.mesh.position;
+      for (const q of order) {
+        if (q === p || q.out || q.left || !q.mesh.visible) continue;
+        const Q = q.mesh.position;
+        if (Math.abs(Q.y - P.y) > 1.2) continue;
+        const dx = P.x - Q.x, dz = P.z - Q.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= BODY) continue;
+        const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
+        P.x += nx * (BODY - d); // push apart
+        P.z += nz * (BODY - d);
+        const vn = p.vel.x * nx + p.vel.z * nz; // < 0 means moving into them
+        if (vn < 0) {
+          p.vel.x -= 1.6 * vn * nx; // bounce back
+          p.vel.z -= 1.6 * vn * nz;
+          if (mode === "online" && -vn > 1 && time - (q.lastBump || 0) > 0.3) {
+            q.lastBump = time;
+            const push = Math.min(7, -vn * 1.4);
+            send({ t: "bump", to: q.id, x: Math.round(-nx * push * 100) / 100, z: Math.round(-nz * push * 100) / 100 });
+            tone(160, 0.08, 0.08, "square");
+          }
         }
       }
     }
@@ -838,7 +957,7 @@ Hub.register({
           return;
         }
         room.update({ inGame: true });
-        return beginMatch(data.safe, data.roster, data.m);
+        return beginMatch(data.safe, data.roster, data.m, data.opts || DEFAULT_OPTS);
       }
       if (!started || data.m !== matchId) return; // not for this match
       const p = order.find((q) => q.id === from);
@@ -850,12 +969,23 @@ Hub.register({
       } else if (data.t === "step") markStepped(data.row, data.side);
       else if (data.t === "break") breakPanel(data.row, data.side);
       else if (data.t === "fell") eliminate(p);
+      else if (data.t === "respawn") respawnOne(p);
       else if (data.t === "finish") finish(p);
+      else if (data.t === "bump" && data.to === room.id) {
+        const m = me(); // someone shoved me
+        if (m && !m.out && !m.finished && rules.bump) {
+          m.vel.x += data.x;
+          m.vel.z += data.z;
+          if (m.onGround) { m.vel.y = 3; m.onGround = false; }
+          tone(140, 0.1, 0.1, "square");
+        }
+      }
     }
 
     function onRoomPlayers(list) {
       if (!started) return renderRoom(list);
       roomPlayers = list;
+      advertiseLobby(list);
       if (done) return showResults(); // results screen: keep the player list fresh
       const here = new Set(list.map((p) => p.id));
       order.forEach((p) => {
@@ -877,7 +1007,6 @@ Hub.register({
     let roomNote = "";
     let roomNoteBad = false;
     const savedName = (() => { try { return localStorage.getItem("gos:name") || ""; } catch { return ""; } })();
-    const lastCode = (() => { try { return localStorage.getItem("gos:lastRoom") || ""; } catch { return ""; } })();
     let myChar = (() => { try { return Models.byId(localStorage.getItem("gos:char") || "tracksuit").id; } catch { return "tracksuit"; } })();
     if (Models.available()) Models.load(myChar).catch(() => {}); // start downloading early
 
@@ -886,6 +1015,43 @@ Hub.register({
       i.value = value; i.placeholder = placeholder; i.maxLength = max;
       i.addEventListener("keydown", (e) => e.stopPropagation()); // typing shouldn't move anyone
       return i;
+    }
+
+    // The options panel. onChange runs after any change (online: tell the room).
+    function optionsBox(onChange, open = false) {
+      const det = el("details", "gb3-details");
+      det.open = open;
+      det.append(el("summary", "", "Game options"));
+      const box = el("div", "gb3-opts");
+      const changed = () => { saveOpts(); if (onChange) onChange(); };
+
+      const timeRow = el("label", "gb3-opt");
+      const timeSel = el("select");
+      TIME_CHOICES.forEach((t) => {
+        const o = el("option", "", t ? `${t} seconds` : "No time limit");
+        o.value = t;
+        if (t === opts.time) o.selected = true;
+        timeSel.append(o);
+      });
+      timeSel.addEventListener("keydown", (e) => e.stopPropagation());
+      timeSel.onchange = () => { opts.time = +timeSel.value; changed(); };
+      timeRow.append(el("span", "", "Time limit"), timeSel);
+      box.append(timeRow);
+
+      const toggle = (key, text) => {
+        const row = el("label", "gb3-opt");
+        const c = el("input");
+        c.type = "checkbox";
+        c.checked = !!opts[key];
+        c.onchange = () => { opts[key] = c.checked; changed(); };
+        row.append(c, el("span", "", text));
+        box.append(row);
+      };
+      toggle("showSafe", "Show safe tiles in green");
+      toggle("bump", "Players bump into each other");
+      toggle("freePlay", "Free play: respawn instantly when you fall");
+      det.append(box);
+      return det;
     }
 
     function showMenu() {
@@ -920,38 +1086,95 @@ Hub.register({
         const nums = randomNumbers(SOLO_PLAYERS);
         beginMatch(randomSafe(), nums.map((num, i) => ({ id: "solo" + i, name: "Player " + num, num, char: myChar })));
       };
-      const create = el("button", "", "Create online room");
-      const codeRow = el("div", "gb3-row");
-      const codeIn = makeInput(lastCode, "CODE", 4);
-      const join = el("button", "alt", "Join");
-      codeRow.append(codeIn, join);
       const note = el("div", "gb3-note bad");
-
       const getName = () => {
         const n = nameIn.value.trim().slice(0, 14);
         if (!n) { note.textContent = "Type a name first."; nameIn.focus(); return null; }
         try { localStorage.setItem("gos:name", n); } catch {}
         return n;
       };
-      create.onclick = () => { const n = getName(); if (n) enterRoom(Net.newCode(), n); };
-      join.onclick = () => {
-        const n = getName(); if (!n) return;
-        const code = codeIn.value.trim().toUpperCase();
-        if (!/^[A-Z]{4}$/.test(code)) { note.textContent = "Room codes are 4 letters."; return; }
-        enterRoom(code, n);
+
+      // online: host a lobby, or pick one from the live list
+      const host = el("button", "", "Host a lobby");
+      host.onclick = () => { const n = getName(); if (n) enterRoom(Net.newCode(), n); };
+      lobbyListEl = el("ul", "gb3-list");
+      lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
+
+      const controls = el("button", "alt", "🎮 Phone controls layout");
+      controls.onclick = () => {
+        lobby.hidden = true;
+        lobbyListEl = null;
+        input.editLayout(() => showMenu());
       };
-      card.append(solo, el("label", "", "Play online with friends"), create, codeRow, note,
+
+      card.append(optionsBox(null), solo, el("label", "", "Play online with friends"), host,
+        el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "gb3-help", "Keyboard: WASD / arrows + Space · Controller: stick + A/✕ · Phone: on-screen joystick + JUMP"));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
-        create.disabled = join.disabled = true;
+        host.disabled = true;
         note.textContent = "Online play unavailable (Supabase library didn't load).";
+        lobbyListEl = null;
+        return;
       }
+      try {
+        if (!lobbyFeed) lobbyFeed = Net.lobbies("glass-bridge", renderLobbyList);
+        renderLobbyList(lobbyFeed.list());
+      } catch (err) {
+        note.textContent = "Online play unavailable: " + err.message;
+      }
+    }
+
+    // ---------- open lobbies list ----------
+    let lobbyFeed = null; // live list of open lobbies (shared/net.js)
+    let lobbyListEl = null; // the list on the menu, while it's showing
+    function renderLobbyList(list) {
+      if (!lobbyListEl || started || room) return;
+      lobbyListEl.innerHTML = "";
+      const open = list.filter((l) => l.id !== Net.id)
+        .sort((a, b) => (a.inGame ? 1 : 0) - (b.inGame ? 1 : 0) || b.count - a.count);
+      if (!open.length) {
+        lobbyListEl.append(el("li", "gb3-note", "No open lobbies right now. Host one!"));
+        return;
+      }
+      open.forEach((l) => {
+        const li = el("li", "gb3-lobby-row");
+        const full = l.count >= MAX_ONLINE;
+        const info = el("div", "");
+        info.append(el("b", "", `${l.host}'s lobby`),
+          el("div", "gb3-note", `${l.count}/${MAX_ONLINE} players · ${l.inGame ? "playing now (you'll join next round)" : "waiting to start"}`));
+        const btn = el("button", "", full ? "Full" : "Join");
+        btn.disabled = full;
+        btn.onclick = () => lobbyListEl && lobbyListEl.join(l.code);
+        li.append(info, btn);
+        lobbyListEl.append(li);
+      });
+    }
+
+    // the host shows their lobby in everyone's list
+    let myName = "";
+    function advertiseLobby(list) {
+      if (!lobbyFeed || !room) return;
+      const iAmHost = list.length > 0 && list[0].id === room.id;
+      if (!iAmHost) return lobbyFeed.hide();
+      lobbyFeed.advertise({
+        code: room.code,
+        host: myName,
+        count: Math.min(list.length, MAX_ONLINE),
+        inGame: list.some((p) => p.inGame),
+        rules: rulesText(opts),
+      });
+    }
+    function leaveRoom() {
+      if (lobbyFeed) lobbyFeed.hide();
+      if (room) room.leave();
+      room = null;
     }
 
     function enterRoom(code, name) {
       mode = "online";
-      try { localStorage.setItem("gos:lastRoom", code); } catch {}
+      myName = name;
+      lobbyListEl = null;
       roomPlayers = [];
       roomNote = "Connecting…";
       roomNoteBad = false;
@@ -966,7 +1189,7 @@ Hub.register({
               showRoom("Couldn't connect to the online server. Check your internet, or Realtime settings in Supabase.", true);
             }
           },
-        }, { char: myChar });
+        }, { char: myChar, opts: { ...opts } });
       } catch (err) {
         return showRoom("Online play failed to start: " + err.message, true);
       }
@@ -985,7 +1208,8 @@ Hub.register({
       lobby.innerHTML = "";
       lobby.hidden = false;
       const card = el("div", "gb3-card");
-      card.append(el("label", "", "Room code: tell your friends"), el("div", "gb3-code", room ? room.code : ""));
+      card.append(el("h2", "", `${list[0] ? list[0].name : myName}'s lobby`));
+      advertiseLobby(list);
       const inGame = list.some((p) => p.inGame);
       const ul = el("ul", "gb3-list");
       list.slice(0, MAX_ONLINE).forEach((p, i) => {
@@ -998,18 +1222,23 @@ Hub.register({
       const myIndex = list.findIndex((p) => room && p.id === room.id);
       const iAmHost = myIndex === 0;
       let note = roomNote, bad = roomNoteBad;
-      if (inGame) { note = "A game is already running in this room. Try another code."; bad = true; }
+      if (inGame) { note = "A game is running in this lobby. You'll join the next round."; bad = false; }
       else if (myIndex >= MAX_ONLINE) { note = "Room is full (8 players)."; bad = true; }
       else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
 
+      if (iAmHost && !inGame) {
+        card.append(optionsBox(() => { if (room) { room.update({ opts: { ...opts } }); advertiseLobby(roomPlayers); } }, true));
+      } else if (list[0] && list[0].opts && !inGame) {
+        card.append(el("div", "gb3-note", "Rules: " + rulesText({ ...DEFAULT_OPTS, ...list[0].opts })));
+      }
       if (iAmHost && !inGame) {
         const n = Math.min(list.length, MAX_ONLINE);
         const startBtn = el("button", "", n > 1 ? `Start (${n} players)` : "Start (just you)");
         startBtn.onclick = () => hostStart(list);
         card.append(startBtn);
       }
-      const leave = el("button", "alt", "Leave room");
-      leave.onclick = () => { if (room) room.leave(); room = null; mode = "lobby"; showMenu(); };
+      const leave = el("button", "alt", "Leave lobby");
+      leave.onclick = () => { leaveRoom(); mode = "lobby"; showMenu(); };
       card.append(el("div", "gb3-note" + (bad ? " bad" : ""), note), leave);
       lobby.append(card);
     }
@@ -1043,8 +1272,11 @@ Hub.register({
           if (now !== before) tone(countdown > 0 ? 440 : 880, 0.2, 0.12);
           if (countdown <= 0) later(() => (countEl.textContent = ""), 700);
         } else {
-          clockLeft -= dt;
-          if (clockLeft <= 0) { clockLeft = 0; timeUpOnce(); }
+          elapsed += dt;
+          if (rules.time) {
+            clockLeft -= dt;
+            if (clockLeft <= 0) { clockLeft = 0; timeUpOnce(); }
+          }
         }
       }
       renderTimer();
@@ -1074,7 +1306,7 @@ Hub.register({
       // known-safe panels glow
       const pulse = 0.6 + 0.35 * Math.sin(time * 4);
       panels.forEach((row) => row.forEach((p) => {
-        if (p.known && !p.stepped && !p.broken) p.edges.material.opacity = pulse;
+        if (rules.showSafe && p.known && !p.stepped && !p.broken) p.edges.material.opacity = pulse;
       }));
 
       // third-person camera
@@ -1110,7 +1342,8 @@ Hub.register({
       timeouts.forEach(clearTimeout);
       window.removeEventListener("resize", resize);
       input.destroy();
-      if (room) room.leave();
+      leaveRoom();
+      if (lobbyFeed) lobbyFeed.stop();
       scene.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {

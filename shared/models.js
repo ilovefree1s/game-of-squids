@@ -98,6 +98,7 @@ const Models = (() => {
     model.rotation.y = Math.PI; // KayKit characters face +Z
     model.traverse((o) => {
       if (!o.isMesh) return;
+      if (/helmet|visor/i.test(o.name)) o.visible = false; // no helmets: show everyone's face
       o.frustumCulled = false; // animated meshes can move outside their bounds
       if (d.info.tint) {
         o.material = o.material.clone();

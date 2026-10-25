@@ -5,25 +5,50 @@
 //   const m = input.move();       // { x, y } from -1..1  (x: right is +, y: forward/up is +)
 //   if (input.jump()) { ... }      // true once per press of the jump button
 //   input.showTouch(false);        // hide the phone controls (e.g. on a menu screen)
+//   input.editLayout(onDone);      // let the player drag/resize the phone controls (saved on their device)
 //   input.destroy();               // in your game's cleanup
 //
 // Keyboard:   WASD / arrow keys to move, Space to jump
 // Controller: left stick or d-pad to move, A / ✕ (bottom button) to jump
-// Phone:      joystick bottom-left, JUMP button bottom-right (appears automatically on touch screens)
+// Phone:      joystick + JUMP button (appear automatically on touch screens; players can move and resize them)
 
 const Input = (() => {
   const CSS = `
     .inp-touch { position: absolute; inset: 0; pointer-events: none; }
-    .inp-stick { position: absolute; left: 22px; bottom: 22px; width: 130px; height: 130px; border-radius: 50%;
+    .inp-stick { position: absolute; border-radius: 50%;
                  background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.25);
                  pointer-events: auto; touch-action: none; }
-    .inp-knob { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
-                border-radius: 50%; background: rgba(255,255,255,.35); }
-    .inp-jump { position: absolute; right: 26px; bottom: 34px; width: 96px; height: 96px; border-radius: 50%;
-                background: rgba(255,204,51,.75); color: #111; font-weight: 800; font-size: 1rem;
+    .inp-knob { position: absolute; left: 50%; top: 50%; border-radius: 50%; background: rgba(255,255,255,.35);
+                transform: translate(-50%, -50%); }
+    .inp-jump { position: absolute; border-radius: 50%;
+                background: rgba(255,204,51,.75); color: #111; font-weight: 800;
                 display: grid; place-items: center; pointer-events: auto; touch-action: none; user-select: none; }
-    .inp-jump.down { background: rgba(255,204,51,1); transform: scale(.94); }
+    .inp-jump.down { background: rgba(255,204,51,1); }
+    .inp-touch.editing .inp-stick, .inp-touch.editing .inp-jump { outline: 3px dashed #fff; outline-offset: 4px; cursor: move; }
+    .inp-edit { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: min(92%, 340px);
+                background: rgba(20,20,31,.95); color: #f2f2f7; border-radius: 12px; padding: 12px 14px;
+                display: flex; flex-direction: column; gap: 8px; pointer-events: auto; font-size: .9rem;
+                box-shadow: 0 8px 30px #000; z-index: 3; }
+    .inp-edit b { color: #ffcc33; }
+    .inp-edit label { display: flex; align-items: center; gap: 10px; }
+    .inp-edit input[type=range] { flex: 1; accent-color: #ffcc33; }
+    .inp-edit .row { display: flex; gap: 8px; }
+    .inp-edit button { flex: 1; font: inherit; padding: 8px; border: 0; border-radius: 8px; cursor: pointer;
+                       background: #ffcc33; color: #111; font-weight: 700; }
+    .inp-edit button.alt { background: #3a3a55; color: #f2f2f7; }
   `;
+
+  // Where the phone controls sit: centers as fractions of the game area, sizes in pixels.
+  const DEFAULT_LAYOUT = { stick: { x: 0.17, y: 0.8, size: 130 }, jump: { x: 0.85, y: 0.8, size: 96 } };
+  const LAYOUT_KEY = "inp:layout";
+  function loadLayout() {
+    try {
+      const l = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
+      if (l && l.stick && l.jump) return l;
+    } catch {}
+    return JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  }
+  function saveLayout(l) { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(l)); } catch {} }
 
   function create(parent, opts = {}) {
     if (!document.getElementById("inp-style")) {
@@ -92,25 +117,43 @@ const Input = (() => {
     ui.append(stick, jumpBtn);
     parent.append(ui);
 
+    let layout = loadLayout();
+    function applyLayout() {
+      const place = (elem, c) => {
+        elem.style.width = elem.style.height = c.size + "px";
+        elem.style.left = `calc(${(c.x * 100).toFixed(2)}% - ${c.size / 2}px)`;
+        elem.style.top = `calc(${(c.y * 100).toFixed(2)}% - ${c.size / 2}px)`;
+      };
+      place(stick, layout.stick);
+      place(jumpBtn, layout.jump);
+      const k = Math.round(layout.stick.size * 0.43);
+      knob.style.width = knob.style.height = k + "px";
+      jumpBtn.style.fontSize = Math.max(12, Math.round(layout.jump.size * 0.17)) + "px";
+    }
+    applyLayout();
+
+    let editing = false;
     let touchMove = { x: 0, y: 0 };
     let stickPointer = null;
-    const R = 50;
+    const stickRadius = () => layout.stick.size * 0.38;
     function stickAt(e) {
+      const R = stickRadius();
       const r = stick.getBoundingClientRect();
       let dx = e.clientX - (r.left + r.width / 2);
       let dy = e.clientY - (r.top + r.height / 2);
       const d = Math.hypot(dx, dy);
       if (d > R) { dx *= R / d; dy *= R / d; }
-      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
       touchMove = { x: dx / R, y: -dy / R };
     }
     stick.addEventListener("pointerdown", (e) => {
+      if (editing) return;
       e.preventDefault();
       stickPointer = e.pointerId;
       stick.setPointerCapture(e.pointerId);
       stickAt(e);
     });
-    stick.addEventListener("pointermove", (e) => { if (e.pointerId === stickPointer) stickAt(e); });
+    stick.addEventListener("pointermove", (e) => { if (!editing && e.pointerId === stickPointer) stickAt(e); });
     const release = (e) => {
       if (e.pointerId !== stickPointer) return;
       stickPointer = null;
@@ -120,6 +163,7 @@ const Input = (() => {
     stick.addEventListener("pointerup", release);
     stick.addEventListener("pointercancel", release);
     jumpBtn.addEventListener("pointerdown", (e) => {
+      if (editing) return;
       e.preventDefault();
       jumpQueued = true;
       jumpBtn.classList.add("down");
@@ -134,10 +178,86 @@ const Input = (() => {
       (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) ||
       navigator.maxTouchPoints > 0;
     let wanted = true;
-    const applyVisible = () => (ui.style.display = isTouch && wanted ? "" : "none");
+    const applyVisible = () => (ui.style.display = (isTouch && wanted) || editing ? "" : "none");
     const onFirstTouch = () => { isTouch = true; applyVisible(); };
     window.addEventListener("touchstart", onFirstTouch, { passive: true });
     applyVisible();
+
+    // ----- layout editor: drag the controls around, resize with sliders -----
+    function editLayout(onDone) {
+      if (editing) return;
+      editing = true;
+      ui.classList.add("editing");
+      applyVisible();
+      const panel = document.createElement("div");
+      panel.className = "inp-edit";
+      panel.innerHTML = `<div><b>Controls layout</b><br>Drag the joystick and JUMP button to move them.</div>`;
+      const slider = (label, key, min, max) => {
+        const row = document.createElement("label");
+        const r = document.createElement("input");
+        r.type = "range"; r.min = min; r.max = max; r.value = layout[key].size;
+        r.oninput = () => { layout[key].size = +r.value; applyLayout(); };
+        row.append(label, r);
+        panel.append(row);
+        return r;
+      };
+      const s1 = slider("Joystick size", "stick", 80, 220);
+      const s2 = slider("Jump size", "jump", 60, 180);
+      const btns = document.createElement("div");
+      btns.className = "row";
+      const reset = document.createElement("button");
+      reset.className = "alt"; reset.textContent = "Reset";
+      reset.onclick = () => {
+        layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+        s1.value = layout.stick.size; s2.value = layout.jump.size;
+        applyLayout();
+      };
+      const done = document.createElement("button");
+      done.textContent = "Done";
+      done.onclick = () => {
+        editing = false;
+        ui.classList.remove("editing");
+        panel.remove();
+        saveLayout(layout);
+        stick.removeEventListener("pointerdown", dragStart);
+        jumpBtn.removeEventListener("pointerdown", dragStart);
+        applyVisible();
+        if (onDone) onDone();
+      };
+      btns.append(reset, done);
+      panel.append(btns);
+      ui.append(panel);
+
+      // dragging
+      let drag = null;
+      function dragStart(e) {
+        if (!editing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const key = e.currentTarget === stick ? "stick" : "jump";
+        drag = { key, id: e.pointerId };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+      function dragMove(e) {
+        if (!drag || e.pointerId !== drag.id) return;
+        const r = parent.getBoundingClientRect();
+        const c = layout[drag.key];
+        const half = c.size / 2;
+        const x = Math.min(r.width - half, Math.max(half, e.clientX - r.left));
+        const y = Math.min(r.height - half, Math.max(half, e.clientY - r.top));
+        c.x = x / r.width;
+        c.y = y / r.height;
+        applyLayout();
+      }
+      const dragEnd = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
+      stick.addEventListener("pointerdown", dragStart);
+      jumpBtn.addEventListener("pointerdown", dragStart);
+      [stick, jumpBtn].forEach((b) => {
+        b.addEventListener("pointermove", dragMove);
+        b.addEventListener("pointerup", dragEnd);
+        b.addEventListener("pointercancel", dragEnd);
+      });
+    }
 
     return {
       move() {
@@ -160,6 +280,8 @@ const Input = (() => {
       },
       clearJump() { jumpQueued = false; },
       showTouch(on) { wanted = on; applyVisible(); },
+      editLayout,
+      get isTouch() { return isTouch; },
       destroy() {
         document.removeEventListener("keydown", onDown);
         document.removeEventListener("keyup", onUp);

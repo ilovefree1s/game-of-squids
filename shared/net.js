@@ -12,6 +12,12 @@
 //   room.send({ anything: 1 });   // to everyone else (not yourself)
 //   room.update({ ready: true }); // change your presence info
 //   room.leave();
+//
+// Lobby list (so players can browse open lobbies instead of typing codes):
+//   const list = Net.lobbies("my-game", (lobbies) => { ... });  // [{ id, code, host, count, ... }]
+//   list.advertise({ code, host: "Sam", count: 2 });  // host: show my lobby to everyone (call again to update)
+//   list.hide();                                       // stop showing it
+//   list.stop();                                       // in cleanup
 
 const Net = (() => {
   let client = null;
@@ -67,6 +73,37 @@ const Net = (() => {
     };
   }
 
+  function lobbies(game, onList) {
+    const c = getClient();
+    const ch = c.channel(`gos-${game}-lobbies`, { config: { presence: { key: myId } } });
+    let meta = null;
+    let subscribed = false;
+    const list = () => Object.entries(ch.presenceState())
+      .map(([id, metas]) => ({ ...metas[0], id }))
+      .filter((l) => l.code);
+    ch.on("presence", { event: "sync" }, () => onList && onList(list()));
+    ch.subscribe(async (status) => {
+      if (status === "SUBSCRIBED") {
+        subscribed = true;
+        if (meta) await ch.track(meta);
+        if (onList) onList(list());
+      }
+    });
+    return {
+      advertise(m) {
+        const changed = JSON.stringify(m) !== JSON.stringify(meta);
+        meta = m;
+        if (subscribed && changed) ch.track(meta);
+      },
+      hide() {
+        if (meta && subscribed) ch.untrack();
+        meta = null;
+      },
+      list,
+      stop() { try { c.removeChannel(ch); } catch {} },
+    };
+  }
+
   function newCode() {
     const L = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I or O (look like 1 and 0)
     let s = "";
@@ -74,5 +111,5 @@ const Net = (() => {
     return s;
   }
 
-  return { joinRoom, newCode, id: myId };
+  return { joinRoom, lobbies, newCode, id: myId };
 })();
