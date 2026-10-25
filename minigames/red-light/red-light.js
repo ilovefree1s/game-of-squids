@@ -585,7 +585,8 @@ Hub.register({
     const SOUND_DIR = "minigames/red-light/sounds/";
     const SAMPLES = {
       headshot: ["squish_06.mp3"],
-      scream: [], // add scream files here (e.g. "scream_1.mp3") once they're in the sounds folder
+      screamM: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `scream_m${i}.mp3`), // male screams ("aargh male screams")
+      screamF: [1, 2, 3, 4].map((i) => `scream_f${i}.mp3`), // female screams ("female screams")
     };
     const decoded = {}; // file -> AudioBuffer (or a promise while it loads)
     function loadSamples() {
@@ -1391,6 +1392,7 @@ Hub.register({
     // Each contestant still on the field within 10 ft of the victim has a 1-in-3 chance to scream; at most two
     // screams per shot. The rolls come from the game id and the victim, so every player hears the same screams.
     const SCREAM_RANGE = 3.05; // 10 ft
+    const FEMALE_CHARS = new Set(["rogue", "rogue-hooded", "skeleton-rogue"]); // characters that scream with the female screams (everyone else: male)
     function seeded(str) { // a repeatable random number generator from a string
       let h = 2166136261;
       for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
@@ -1413,7 +1415,7 @@ Hub.register({
         after(delay, () => {
           const lis = me() && !me().dead ? me().mesh.position : camera.position;
           const far = Math.hypot(q.mesh.position.x - lis.x, q.mesh.position.z - lis.z);
-          playSample("scream", clamp(1.1 - far / 70, 0.25, 1), pick);
+          playSample(FEMALE_CHARS.has(q.char) ? "screamF" : "screamM", clamp(1.1 - far / 70, 0.25, 1), pick);
         });
       }
     }
