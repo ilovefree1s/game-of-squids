@@ -51,6 +51,8 @@ Hub.register({
     const PUSH_RANGE = 1.5; // how far a push reaches
     const PUSH_FORCE = 9; // how hard a push shoves
     const PUSH_COOLDOWN = 0.7; // seconds between pushes
+    const PUSH_ANIM = 0.45; // how long the shove animation lasts
+    const HIT_ANIM = 0.45; // how long the "got hit" stagger lasts
 
     const rowZ = (i) => FIRST_Z - i * ROW_GAP;
     const laneX = (side) => (side === 0 ? -LANE_X : LANE_X); // 0 = left, 1 = right
@@ -282,14 +284,15 @@ Hub.register({
 
     // What's under (x, z)? Returns { top, kind, row, side } or null (nothing: you fall).
     const M = 0.2; // forgiveness: you count as on the glass if your body (not just your center) is over it
-    function supportAt(x, z) {
+    const M_LAND = 0.38; // extra forgiveness when LANDING a jump (you get pulled onto the glass)
+    function supportAt(x, z, m = M) {
       const inR = (r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
       if (inR(START)) return { top: 0, kind: "start" };
       if (inR(FINISH)) return { top: 0, kind: "finish" };
       const i = Math.round((FIRST_Z - z) / ROW_GAP);
-      if (i < 0 || i >= STEPS || Math.abs(z - rowZ(i)) > PANEL / 2 + M) return null;
+      if (i < 0 || i >= STEPS || Math.abs(z - rowZ(i)) > PANEL / 2 + m) return null;
       for (const side of [0, 1]) {
-        if (!panels[i][side].broken && Math.abs(x - laneX(side)) <= PANEL / 2 + M) {
+        if (!panels[i][side].broken && Math.abs(x - laneX(side)) <= PANEL / 2 + m) {
           return { top: 0.03, kind: "panel", row: i, side };
         }
       }
@@ -410,12 +413,22 @@ Hub.register({
 
     function animate(p, speed, inAir, dt) {
       const kk = p.mesh.userData.kk;
-      if (!p.out && p.pushT > 0) { // in the middle of a push
-        p.pushT -= dt;
+      if (!p.out && (p.pushT > 0 || p.hitT > 0)) { // pushing someone, or just got pushed
+        const body = kk ? kk.root : null;
+        if (p.pushT > 0) {
+          p.pushT -= dt;
+          // lean forward into the shove
+          if (body) body.rotation.x = -0.45 * Math.sin(Math.PI * Math.min(1, 1 - p.pushT / PUSH_ANIM));
+        } else {
+          p.hitT -= dt;
+          // knocked backward
+          if (body) body.rotation.x = 0.35 * Math.sin(Math.PI * Math.min(1, 1 - p.hitT / HIT_ANIM));
+        }
         if (kk) kk.update(dt);
-        else p.mesh.userData.arms.forEach((a) => (a.rotation.x = -1.5));
+        else p.mesh.userData.arms.forEach((a) => (a.rotation.x = p.pushT > 0 ? -1.5 : -2.4));
         return;
       }
+      if (kk && kk.root.rotation.x) kk.root.rotation.x = 0;
       if (kk) {
         if (p.out) {
           kk.play("Jump_Idle", { speed: 1.6 });
@@ -863,6 +876,7 @@ Hub.register({
       if (wantJump && p.onGround) {
         p.vel.y = JUMP_V;
         p.onGround = false;
+        p.jumped = true;
         tone(300, 0.08, 0.05, "triangle");
       }
 
@@ -881,15 +895,23 @@ Hub.register({
         if (P.z > START.z1 - 0.15 && P.y > -1) { P.z = START.z1 - 0.15; p.vel.z = Math.min(0, p.vel.z); }
         if (P.z < FINISH.z0 + 0.15 && P.y > -1) { P.z = FINISH.z0 + 0.15; p.vel.z = Math.max(0, p.vel.z); }
 
-        const sup = p.out ? null : supportAt(P.x, P.z);
+        // only a real jump gets the extra landing help, so you can't walk across the gaps
+        const sup = p.out ? null : supportAt(P.x, P.z, p.jumped && !p.onGround ? M_LAND : M);
         const wasGround = p.onGround;
         if (sup && p.vel.y <= 0 && prevY >= sup.top - 0.05 && P.y <= sup.top) {
           P.y = sup.top;
           p.vel.y = 0;
           p.onGround = true;
           if (!wasGround) {
+            p.jumped = false;
             p.vel.x *= 0.35; // "sticky" landings so you don't slide off a small panel
             p.vel.z *= 0.35;
+            if (sup.kind === "panel") {
+              // landed near the edge: pull you onto the glass
+              const lim = PANEL / 2 - 0.05;
+              P.x = laneX(sup.side) + Math.max(-lim, Math.min(lim, P.x - laneX(sup.side)));
+              P.z = rowZ(sup.row) + Math.max(-lim, Math.min(lim, P.z - rowZ(sup.row)));
+            }
             onLand(p, sup);
           }
         } else {
@@ -935,6 +957,20 @@ Hub.register({
         P.x += nx * (BODY - d); // push apart
         P.z += nz * (BODY - d);
         const vn = p.vel.x * nx + p.vel.z * nz; // < 0 means moving into them
+        // Jumping onto a tile someone is standing on: they hold their ground and you bounce back off them.
+        const theyStand = Q.y < 0.2 && Q.y > -0.5; // on the glass / a platform
+        if (!p.onGround && theyStand && P.y >= Q.y - 0.1) {
+          if (time - (q.lastBlock || 0) > 0.25) {
+            q.lastBlock = time;
+            const back = Math.max(3.5, -vn); // at least a little knockback
+            p.vel.x = nx * back;
+            p.vel.z = nz * back;
+            p.vel.y = Math.max(p.vel.y, 2.5); // small hop backward
+            startHitAnim(p);
+            tone(170, 0.1, 0.1, "square");
+          }
+          continue;
+        }
         if (vn < 0) {
           p.vel.x -= 1.6 * vn * nx; // bounce back
           p.vel.z -= 1.6 * vn * nz;
@@ -955,6 +991,7 @@ Hub.register({
       tone(260, 0.12, 0.08, "triangle");
       const P = p.mesh.position;
       const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
+      if (p.onGround) { p.vel.x += fx * 3; p.vel.z += fz * 3; } // step into it
       const hits = [];
       for (const q of order) {
         if (q === p || q.out || q.left || q.finished || !q.mesh.visible) continue;
@@ -965,14 +1002,55 @@ Hub.register({
         if (d > PUSH_RANGE || d < 1e-3 || (dx * fx + dz * fz) / d < 0.3) continue; // too far / not in front
         const r2 = (v) => Math.round(v * 100) / 100;
         hits.push({ to: q.id, x: r2((dx / d) * PUSH_FORCE), z: r2((dz / d) * PUSH_FORCE) });
+        startHitAnim(q);
       }
       if (hits.length) tone(150, 0.15, 0.12, "square");
       send({ t: "push", hits });
     }
     function startPushAnim(p) {
-      p.pushT = 0.5;
+      p.pushT = PUSH_ANIM;
+      p.hitT = 0;
       const kk = p.mesh.userData.kk;
-      if (kk) kk.play("Melee_Unarmed_Attack_Punch_A", { once: true, speed: 1.5, fade: 0.08 });
+      if (kk) kk.play("Melee_Unarmed_Attack_Punch_A", { once: true, speed: 1.6, fade: 0.06 });
+      pushBurst(p);
+    }
+    function startHitAnim(q) {
+      if (q.out) return;
+      q.hitT = HIT_ANIM;
+      const kk = q.mesh.userData.kk;
+      if (kk) kk.play("Hit_A", { once: true, speed: 1.3, fade: 0.06 });
+    }
+
+    // a white shockwave ring that flies out in front of the pusher, so you can SEE the push
+    const effects = [];
+    const ringGeo = new THREE.RingGeometry(0.22, 0.38, 32);
+    function pushBurst(p) {
+      const P = p.mesh.position;
+      const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y);
+      const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      ring.position.set(P.x + fx * 0.7, P.y + 1.15, P.z + fz * 0.7);
+      ring.lookAt(ring.position.x + fx, ring.position.y, ring.position.z + fz); // faces where you're pushing
+      ring.userData = { t: 0, fx, fz };
+      scene.add(ring);
+      effects.push(ring);
+    }
+    function updateEffects(dt) {
+      for (let i = effects.length - 1; i >= 0; i--) {
+        const r = effects[i];
+        r.userData.t += dt;
+        const t = r.userData.t;
+        r.scale.setScalar(1 + t * 7);
+        r.position.x += r.userData.fx * dt * 3.5;
+        r.position.z += r.userData.fz * dt * 3.5;
+        r.material.opacity = Math.max(0, 0.85 * (1 - t / 0.35));
+        if (t > 0.35) {
+          scene.remove(r);
+          r.material.dispose();
+          effects.splice(i, 1);
+        }
+      }
     }
     function getPushed(x, z) {
       const m = me();
@@ -1020,8 +1098,11 @@ Hub.register({
         p.best = Math.max(p.best, data.row); // how far they got (for results)
       } else if (data.t === "push") {
         startPushAnim(p);
-        const hit = (data.hits || []).find((h) => h.to === room.id);
-        if (hit) getPushed(hit.x, hit.z);
+        (data.hits || []).forEach((h) => {
+          const q = order.find((o) => o.id === h.to);
+          if (q) startHitAnim(q); // everyone sees who got hit
+          if (h.to === room.id) getPushed(h.x, h.z);
+        });
       }
       else if (data.t === "break") breakPanel(data.row, data.side);
       else if (data.t === "fell") eliminate(p);
@@ -1345,6 +1426,7 @@ Hub.register({
         else stepIdle(p, dt);
       }
 
+      updateEffects(dt);
       for (let i = shards.length - 1; i >= 0; i--) {
         const s = shards[i];
         s.userData.v.y -= GRAVITY * dt;
