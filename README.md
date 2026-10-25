@@ -15,6 +15,9 @@ Online play needs an internet connection; solo works offline.
 | Controller | Left stick / d-pad | A (Xbox) / ✕ (PlayStation) |
 | Phone | On-screen joystick | JUMP button |
 
+Phone players can drag the joystick and JUMP button anywhere and resize them
+(Glass Bridge menu → **Phone controls layout**). The layout is saved on that device.
+
 ## Folder layout
 
 ```
@@ -70,6 +73,7 @@ so any mini-game can use the global `THREE`.
 const input = Input.create(container);   // draws phone controls inside container
 const m = input.move();                  // { x, y }: x = right, y = forward, each -1..1
 if (input.jump()) { /* jump! */ }        // true once per press
+input.editLayout(onDone);                // let the player move/resize the phone controls
 // in your cleanup: input.destroy();
 ```
 
@@ -84,6 +88,14 @@ const room = Net.joinRoom("my-game", "ABCD", "Sam", {
 });
 room.send({ x: 1, y: 2 });     // goes to everyone else in the room
 room.leave();                  // in your cleanup
+```
+
+Lobby browser (players see open lobbies and click to join, no codes to type):
+
+```js
+const lobbies = Net.lobbies("my-game", (list) => showList(list)); // [{ code, host, count, ... }]
+lobbies.advertise({ code: room.code, host: "Sam", count: 2 });   // the host lists their lobby
+lobbies.hide();                                                  // when the host leaves
 ```
 
 `shared/config.js` holds the Supabase **publishable** key, which is safe to be public.
