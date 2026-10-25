@@ -701,11 +701,19 @@ Hub.register({
     const bolts = []; // flying and stuck crossbow bolts
     const tmpV = new THREE.Vector3();
     const DOWN = new THREE.Vector3(0, -1, 0); // the bolt models point their tip down (-Y)
-    function chestOf(p) {
+    // Snipers always go for the head. The aim point is the middle of the head, worked out from the head bone.
+    const HEAD_UP = 0.22; // from the head bone (base of the skull) up to the middle of the head
+    const tmpQ = new THREE.Quaternion();
+    function headBone(p) {
       const kk = p.mesh.userData.kk;
-      const bone = kk && kk.bone("chest");
-      if (bone) return bone.getWorldPosition(new THREE.Vector3());
-      return p.mesh.position.clone().add(new THREE.Vector3(0, 1.3, 0));
+      return kk ? kk.bone("head") : null;
+    }
+    function headOf(p) {
+      const bone = headBone(p);
+      if (!bone) return p.mesh.position.clone().add(new THREE.Vector3(0, 1.75, 0));
+      const v = bone.getWorldPosition(new THREE.Vector3());
+      bone.getWorldQuaternion(tmpQ);
+      return v.add(new THREE.Vector3(0, HEAD_UP, 0).applyQuaternion(tmpQ));
     }
     function fire(p) {
       // the nearest sniper takes the shot
@@ -738,19 +746,33 @@ Hub.register({
     }
     function updateBolts(dt) {
       for (const b of bolts) {
-        if (b.stuck) { // ride along with the falling body
-          b.obj.position.copy(chestOf(b.p)).add(b.offset);
+        if (b.stuck) { // stays stuck in the head as the body falls
+          const bone = headBone(b.p);
+          if (bone) {
+            bone.getWorldPosition(b.obj.position);
+            bone.getWorldQuaternion(tmpQ);
+            b.obj.position.add(tmpV.copy(b.relPos).applyQuaternion(tmpQ));
+            b.obj.quaternion.copy(tmpQ).multiply(b.relRot);
+          }
           continue;
         }
         b.t += dt;
-        const to = chestOf(b.p);
+        const to = headOf(b.p);
         const k = Math.min(1, b.t / b.dur);
-        b.obj.position.lerpVectors(b.from, to, k);
         tmpV.subVectors(to, b.from).normalize();
         b.obj.quaternion.setFromUnitVectors(DOWN, tmpV);
+        // the bolt's middle stops short of the target, so its tip sinks into the head
+        b.obj.position.lerpVectors(b.from, to, k).addScaledVector(tmpV, -0.3 * k);
         if (k >= 1) {
           b.stuck = true;
-          b.offset = tmpV.clone().multiplyScalar(-0.35); // sticking out of the chest, toward the shooter
+          const bone = headBone(b.p);
+          if (bone) { // remember where it sits relative to the head
+            const bp = bone.getWorldPosition(new THREE.Vector3());
+            bone.getWorldQuaternion(tmpQ);
+            const inv = tmpQ.clone().invert();
+            b.relPos = b.obj.position.clone().sub(bp).applyQuaternion(inv);
+            b.relRot = inv.multiply(b.obj.quaternion);
+          }
           hit(b.p);
         }
       }
