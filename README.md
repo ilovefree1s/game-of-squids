@@ -74,6 +74,7 @@ minigames/
 | Snake | Player 1 | playable |
 | Reaction Time | Player 2 | playable |
 | Glass Bridge (3D, online, KayKit characters, push, first across wins) | ilovefree1s | playable |
+| Red Light, Green Light (3D, solo for now; online next) | Cougar | playable (solo) |
 
 ## 3D
 
