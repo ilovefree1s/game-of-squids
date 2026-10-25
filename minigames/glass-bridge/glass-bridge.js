@@ -584,18 +584,21 @@ Hub.register({
       if (!(b instanceof AudioBuffer)) { loadSounds(); return; }
       const far = camera.position.distanceTo(p.mesh.position);
       const level = Math.max(0.25, Math.min(1, 1.15 - far / 40));
-      // falling away: the pitch sags, it gets muffled, and it slowly fades to silence (no echo)
-      const t = a.currentTime, rate = 0.96 + (h % 9) / 100;
-      const len = b.duration / (rate * 0.75); // how long the scream lasts while it slows down
+      // a normal scream that sags a little and fades out at the end, as they drop away
+      const t = a.currentTime, rate = 0.97 + (h % 7) / 100;
+      const len = b.duration / (rate * 0.95);
       const src = a.createBufferSource(); src.buffer = b;
       src.playbackRate.setValueAtTime(rate, t);
-      src.playbackRate.linearRampToValueAtTime(rate * 0.55, t + len);
+      src.playbackRate.setValueAtTime(rate, t + len * 0.45);
+      src.playbackRate.linearRampToValueAtTime(rate * 0.88, t + len);
       const lp = a.createBiquadFilter(); lp.type = "lowpass";
-      lp.frequency.setValueAtTime(7000, t);
-      lp.frequency.exponentialRampToValueAtTime(500, t + len);
+      lp.frequency.setValueAtTime(12000, t);
+      lp.frequency.setValueAtTime(12000, t + len * 0.45);
+      lp.frequency.exponentialRampToValueAtTime(2800, t + len);
       const g = a.createGain();
       g.gain.setValueAtTime(level, t);
-      g.gain.exponentialRampToValueAtTime(level * 0.25, t + len * 0.6);
+      g.gain.setValueAtTime(level, t + len * 0.4);
+      g.gain.exponentialRampToValueAtTime(level * 0.35, t + len * 0.8);
       g.gain.exponentialRampToValueAtTime(0.001, t + len);
       src.connect(lp).connect(g).connect(a.destination);
       src.start(t);
