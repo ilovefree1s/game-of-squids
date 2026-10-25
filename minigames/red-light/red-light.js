@@ -13,7 +13,7 @@
 //   SECRET ALLIANCES (lobby only): ask any player to ally. Only they see the request; if they confirm,
 //   each of you sees the other's name in green. Nobody else knows. Alliances reset after every game.
 // COMPUTER PLAYERS: 1-12, each with Aggression, Desperation and Cowardice (1-5). Online, the host's game runs them.
-// Shoving anyone while she's watching gets YOU shot, hidden or not.
+// Shoving anyone while she's watching gets YOU shot, unless you're hidden from her behind another player.
 //
 // Art: KayKit characters/props (shared/models.js). The doll, stage, music and sounds are original,
 // built in code (no image or sound files).
@@ -1137,8 +1137,8 @@ Hub.register({
       }
       tone(150, 0.12, 0.08, "triangle");
       if (best) { noteHit(p, best, "push"); knock(best, fx, fz, PUSH_POWER, PUSH_DECAY, "push", p.id); }
-      // shoving while she's watching: she always sees it, even if you're hidden behind someone
-      if (phase === "watch" && !p.out && !p.finished) caught(p, "shove");
+      // shoving while she's watching gets you shot, if she can see you (hidden is hidden)
+      if (phase === "watch" && !p.out && !p.finished && seen(p)) caught(p, "shove");
     }
 
     function knock(q, dx, dz, power, decay = KNOCK_DECAY, kind = "push", by = myId) {
