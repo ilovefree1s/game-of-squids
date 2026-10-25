@@ -60,6 +60,8 @@ Hub.register({
     const DUMMIES = 4; // practice dummies (solo testing)
     const MAX_ONLINE = 8;
     const SEND_EVERY = 0.1; // online: seconds between position updates
+    const KILL_CREDIT = 1.5; // caught within this many seconds of a shove or bump = the shover gets the kill
+    const FT = 3.281; // feet per meter (distances shown to players are in feet)
 
     const FIELD_HALF = 18; // the field is 36 wide
     const START_Z = 0; // start line
@@ -139,7 +141,8 @@ Hub.register({
       .rl-chant span.on { opacity: 1; color: #ffe08a; }
       .rl-msg { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); width: min(90%, 640px); text-align: center;
                 pointer-events: none; font-size: clamp(12px, calc(var(--u) * 3.2), 18px); text-shadow: 0 2px 6px #000; white-space: pre-line; }
-      .rl-msg.bad { color: #ff5c5c; } .rl-msg.good { color: #3ddc84; }
+      .rl-msg:not(:empty) { background: rgba(10,10,18,.62); padding: 6px 14px; border-radius: 10px; width: fit-content; max-width: 90%; }
+      .rl-msg.bad { color: #ff6b6b; font-weight: 800; } .rl-msg.good { color: #3ddc84; font-weight: 800; }
       .rl-count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
                   font-size: clamp(36px, calc(var(--u) * 15), 96px); font-weight: 900; color: #ffcc33; text-shadow: 0 4px 20px #000; }
       .rl-lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -166,6 +169,9 @@ Hub.register({
       .rl-tag.ally { color: #3ddc84; }
       .rl-asks { background: #2b1f33; border: 1px solid #6b3a7a; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .rl-asks .rl-row button { flex: none; padding: 5px 12px; font-size: .85rem; }
+      .rl-result b { color: var(--text); }
+      .rl-result .rl-stats { font-size: .78rem; color: var(--muted); margin-top: 3px; }
+      .rl-betrayed { color: #ff5c5c; font-weight: 800; }
       .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
       .rl-note.bad { color: #ff5c5c; }
       .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
@@ -894,7 +900,11 @@ Hub.register({
     function addPlayer(r, k, n) {
       const p = { ...r, vel: new THREE.Vector3(), knock: new THREE.Vector3(), out: false, dead: false, finished: false,
         speed: 0, pushT: 0, hitT: 0, lastPush: -9, knocked: {},
-        remote: mode === "online" && r.id !== myId, target: null, targetRy: 0 };
+        remote: mode === "online" && r.id !== myId, target: null, targetRy: 0,
+        // for the results screen
+        stats: { pushes: 0, landed: 0, gotPushed: 0, bumpsGiven: 0, bumpsTaken: 0, kills: [] },
+        lastHit: null, // { by, kind: "push" | "bump", at } the last time someone shoved or bumped them
+        cause: "", by: "", betrayed: false, distFt: 0 };
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
       p.mesh.position.set((k - (n - 1) / 2) * spread, 0, START_Z + 2.2);
@@ -996,16 +1006,26 @@ Hub.register({
         const runSpeed = Math.hypot(p.vel.x, p.vel.z);
         if (runSpeed > SPEED * 1.2 && into > 0.5 && time - (p.knocked[q.id] || -9) > 0.6) {
           p.knocked[q.id] = time;
-          knock(q, p.vel.x / runSpeed, p.vel.z / runSpeed, SPRINT_KNOCK);
+          noteHit(p, q, "bump");
+          knock(q, p.vel.x / runSpeed, p.vel.z / runSpeed, SPRINT_KNOCK, KNOCK_DECAY, "bump");
           p.vel.multiplyScalar(0.5); // the bump slows the sprinter down
         }
       }
+    }
+
+    // Someone shoved or bumped someone: every device keeps the same tally.
+    function noteHit(from, to, kind) {
+      if (!from || !to) return;
+      if (kind === "push") { from.stats.landed++; to.stats.gotPushed++; }
+      else { from.stats.bumpsGiven++; to.stats.bumpsTaken++; }
+      to.lastHit = { by: from.id, kind, at: time };
     }
 
     // Shove whoever is right in front of you.
     function doPush(p) {
       p.lastPush = time;
       p.pushT = 0.45;
+      p.stats.pushes++;
       send({ t: "push" }); // everyone sees the shove
       const fx = -Math.sin(p.mesh.rotation.y), fz = -Math.cos(p.mesh.rotation.y); // facing direction
       let best = null, bd = PUSH_RANGE;
@@ -1016,12 +1036,12 @@ Hub.register({
         if (d < bd && (dx * fx + dz * fz) / Math.max(d, 0.001) > Math.cos(Math.PI / 3)) { bd = d; best = q; }
       }
       tone(150, 0.12, 0.08, "triangle");
-      if (best) knock(best, fx, fz, PUSH_POWER, PUSH_DECAY);
+      if (best) { noteHit(p, best, "push"); knock(best, fx, fz, PUSH_POWER, PUSH_DECAY, "push"); }
     }
 
-    function knock(q, dx, dz, power, decay = KNOCK_DECAY) {
+    function knock(q, dx, dz, power, decay = KNOCK_DECAY, kind = "push") {
       if (q.remote) { // their own device moves them: tell it
-        send({ t: "knock", to: q.id, dx, dz, power, decay });
+        send({ t: "knock", to: q.id, dx, dz, power, decay, kind });
         q.hitT = 0.55;
         noise(0.12, power > 5 ? 0.22 : 0.1, "lowpass", 500);
         return;
@@ -1063,13 +1083,27 @@ Hub.register({
       msg.className = "rl-msg" + (kind ? " " + kind : "");
     }
 
-    function caught(p) {
+    // reason: "red" (moved while she watched) or "time" (time ran out). info: what the victim's own device decided (online).
+    function caught(p, reason = "red", info = null) {
       if (p.out || p.finished) return;
       p.out = true;
       p.vel.set(0, 0, 0);
       p.speed = 0;
+      if (info) Object.assign(p, info); // another player's device told us how they died
+      else if (!p.remote) {
+        const h = p.lastHit;
+        if (reason === "red" && h && time - h.at < KILL_CREDIT) { // shoved or bumped into getting caught
+          p.cause = h.kind; p.by = h.by; p.betrayed = allies.has(h.by) || (p.id !== myId && h.by === myId && allied(p));
+        } else p.cause = reason;
+        p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT);
+      } else { p.cause = reason; p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT); }
+      const killer = p.by && order.find((q) => q.id === p.by);
+      if (killer && (p.cause === "push" || p.cause === "bump")) killer.stats.kills.push(p.id);
       renderPlayers();
-      if (p.id === myId) { say("She saw you move…", "bad"); send({ t: "caught" }); }
+      if (p.id === myId) {
+        say("She saw you move…", "bad");
+        send({ t: "caught", info: { cause: p.cause, by: p.by, betrayed: p.betrayed, distFt: p.distFt } });
+      }
       fire(p);
     }
     function hit(p) {
@@ -1077,7 +1111,10 @@ Hub.register({
       p.dead = true;
       hitSound();
       announce(`Player ${p.num}, eliminated.`);
-      if (p.id === myId) say(`Player ${p.num}, eliminated.`, "bad");
+      if (p.id === myId) {
+        const traitor = p.betrayed && order.find((q) => q.id === p.by);
+        say(`Player ${p.num}, eliminated.` + (traitor ? `\nBetrayed by ${traitor.name}` : ""), "bad");
+      }
       later(checkEnd, 1800);
     }
     function finish(p) {
@@ -1106,7 +1143,7 @@ Hub.register({
       buzzer();
       say("Time's up.", "bad");
       // everyone still on the field is shot
-      order.filter((p) => !p.finished && !p.out).forEach((p, k) => later(() => caught(p), 600 + k * 450));
+      order.filter((p) => !p.finished && !p.out).forEach((p, k) => later(() => caught(p, "time"), 600 + k * 450));
       later(() => { if (!done) endMatch(); }, 600 + order.length * 450 + 2500);
     }
     function endMatch() {
@@ -1125,9 +1162,14 @@ Hub.register({
       later(() => musicBox(true, 0.26), 800);
       if (mode !== "online") { later(() => { musicBox(false); api.gameOver(); }, 5200); return; }
       // online: back to the lobby with the results; alliances don't carry over
+      const nameOf = (id) => { const q = order.find((o) => o.id === id); return q ? q.name : "someone"; };
       results = [...order].filter((p) => !p.dummy)
-        .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0))
-        .map((p) => ({ name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft }));
+        .sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || (b.finishLeft || 0) - (a.finishLeft || 0) || b.distFt - a.distFt)
+        .map((p) => ({
+          name: p.name, num: p.num, mine: p.id === myId, ok: p.finished, left: p.finishLeft,
+          cause: p.cause, by: p.by ? nameOf(p.by) : "", betrayed: p.betrayed, distFt: Math.round(p.distFt),
+          stats: { ...p.stats, kills: p.stats.kills.map(nameOf) },
+        }));
       allies.clear(); asked.clear(); incoming.clear();
       if (room) room.update({ inGame: false });
       later(() => { musicBox(false); renderRoom(roomPlayers); }, 4500);
@@ -1376,7 +1418,7 @@ Hub.register({
         if (!p.left && !here.has(p.id)) {
           p.left = true;
           p.mesh.visible = false;
-          if (!p.finished && !p.dead) { p.out = true; say(`${p.name} left the game.`, "bad"); }
+          if (!p.finished && !p.dead) { p.out = true; p.cause = "left"; p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT); say(`${p.name} left the game.`, "bad"); }
           renderPlayers();
           checkEnd();
         }
@@ -1417,13 +1459,14 @@ Hub.register({
         p.target.set(data.x, 0, data.z);
         p.targetRy = data.ry;
         p.speed = data.sp;
-      } else if (data.t === "push") p.pushT = 0.45;
+      } else if (data.t === "push") { p.pushT = 0.45; p.stats.pushes++; }
       else if (data.t === "knock") {
         const q = order.find((o) => o.id === data.to);
         if (!q) return;
-        if (q.id === myId) knock(q, data.dx, data.dz, data.power, data.decay); // I got shoved
+        noteHit(p, q, data.kind || "push");
+        if (q.id === myId) knock(q, data.dx, data.dz, data.power, data.decay, data.kind); // I got shoved
         else q.hitT = 0.55;
-      } else if (data.t === "caught") caught(p);
+      } else if (data.t === "caught") caught(p, "red", data.info || null);
       else if (data.t === "finish") finish(p);
     }
 
@@ -1438,8 +1481,25 @@ Hub.register({
       card.append(el("h2", "", `${hostP ? hostP.name : myName}'s lobby`));
       if (results) {
         const ul = el("ul", "rl-list");
-        results.forEach((r) => ul.append(el("li", "", `${r.ok ? "✅" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}` +
-          (r.ok ? ` · made it with ${clockText(Math.ceil(r.left || 0))} left` : " · eliminated"))));
+        const CAUSE = { red: "moved on red", time: "time ran out", left: "left the game" };
+        results.forEach((r) => {
+          const li = el("li", "rl-result");
+          let how;
+          if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
+          else {
+            how = r.cause === "push" ? `pushed into the line of fire by ${r.by}`
+              : r.cause === "bump" ? `bumped into the line of fire by ${r.by}` : CAUSE[r.cause] || "eliminated";
+            how += ` · made it ${r.distFt} ft`;
+          }
+          li.append(el("b", "", `${r.ok ? "✅" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
+          if (r.betrayed) li.append(el("span", "rl-betrayed", ` · BETRAYED by ${r.by}`));
+          const st = r.stats;
+          const bits = [`pushes ${st.pushes} (${st.landed} landed)`, `got pushed ${st.gotPushed}`,
+            `sprint bumps ${st.bumpsGiven} given / ${st.bumpsTaken} taken`];
+          if (st.kills.length) bits.push(`got ${st.kills.join(", ")} killed`);
+          li.append(el("div", "rl-stats", bits.join(" · ")));
+          ul.append(li);
+        });
         card.append(el("label", "", "Last game"), ul);
       }
       // someone asked me to ally
