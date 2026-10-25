@@ -46,12 +46,12 @@ Hub.register({
     const SPRINT_STOP_RATE = STOP_RATE / 2; // ...and stopping from a sprint takes twice as long
     const TAP_GAP = 0.3; // seconds: how quick the double tap must be
     const BODY_R = 0.32; // players can't overlap closer than 2 x this (0.32 m = about 12.6 in)
-    const SPRINT_KNOCK = 3.5; // sprinting into someone knocks them this hard (m/s)
-    const PUSH_RANGE = 0.75; // how far a push reaches, center to center (about 2 ft 5.5 in)
+    const SPRINT_KNOCK = 6.4; // sprinting into someone knocks them this hard (m/s): slides them about 3 ft
+    const PUSH_RANGE = 1.05; // how far a push reaches, center to center (about 3 ft 5.5 in)
     const PUSH_POWER = 9; // how hard a push shoves (m/s): slides them about 6 1/2 ft
     const PUSH_DECAY = 4.5; // how fast a push wears off (lower = slides further)
     const PUSH_COOLDOWN = 0.8; // seconds between pushes
-    const KNOCK_DECAY = 7; // how fast a sprint bump wears off: slides them about 1 1/2 ft
+    const KNOCK_DECAY = 7; // how fast a sprint bump wears off
     const DUMMIES = 4; // practice dummies (solo testing)
 
     const FIELD_HALF = 18; // the field is 36 wide
@@ -916,10 +916,12 @@ Hub.register({
       const rate = len > 0.05 ? 10 : p.fromSprint ? SPRINT_STOP_RATE : STOP_RATE;
       p.vel.lerp(want, 1 - Math.exp(-dt * rate));
       if (p.vel.lengthSq() < 0.0004) { p.vel.set(0, 0, 0); p.fromSprint = false; }
-      p.knock.multiplyScalar(Math.exp(-dt * (p.knockDecay || KNOCK_DECAY))); // getting shoved
-      if (p.knock.lengthSq() < 0.0004) p.knock.set(0, 0, 0);
+      // getting shoved: slide the exact distance for this frame, so the slide is the same at any frame rate
+      const kd = p.knockDecay || KNOCK_DECAY, kf = Math.exp(-dt * kd);
       const P = p.mesh.position;
-      P.addScaledVector(p.vel, dt).addScaledVector(p.knock, dt);
+      P.addScaledVector(p.vel, dt).addScaledVector(p.knock, (1 - kf) / kd);
+      p.knock.multiplyScalar(kf);
+      if (p.knock.lengthSq() < 0.0004) p.knock.set(0, 0, 0);
       collide(p);
       P.x = clamp(P.x, -FIELD_HALF, FIELD_HALF);
       P.z = clamp(P.z, BACK_Z + 26, FRONT_Z - 3);
