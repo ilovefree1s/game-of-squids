@@ -10,6 +10,9 @@
 
 * { box-sizing: border-box; }
 
+/* Make sure hidden elements stay hidden even if a class sets display */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: system-ui, sans-serif;
