@@ -48,6 +48,12 @@ add a dated line under their heading below. Their Claude will mention it in chat
   3D, online multiplayer, rules like the show, skeleton snipers with crossbows. It will add one
   `<script>` line to `index.html` for the menu, and otherwise stays in its own folder. If it ever
   needs a change to `shared/`, it'll be noted here first.
+- 2026-10-25 (from Cougar): **Red Light, Green Light is in the game** (v0.12.0). Shared files it touched:
+  one `<script>` line in `index.html` and one row in the README's games table. Nothing in `shared/`.
+  It's online for up to 8 players (its own lobby list, "red-light"), with 1-12 computer players, secret
+  alliances, push / sprint, and a results screen. It uses `Net`, `Input` and `Models` as they are.
+  Its menu uses the same saved name (`gos:name`) and character (`gos:char`) as Glass Bridge.
+  The version jumped from 0.8.2 to 0.12.0 because Red Light was bumped for each test build on its branch.
 - 2026-10-25 (from Cougar): **This file (`CLAUDE.md`) is new.** Claude Code reads it automatically
   at the start of every session in this repo. Both of you can leave notes for each other here.
 
