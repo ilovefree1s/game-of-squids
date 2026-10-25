@@ -48,9 +48,10 @@ Hub.register({
     const BODY_R = 0.32; // players can't overlap closer than 2 x this (0.32 m = about 12.6 in)
     const SPRINT_KNOCK = 3.5; // sprinting into someone knocks them this hard (m/s)
     const PUSH_RANGE = 0.75; // how far a push reaches, center to center (about 2 ft 5.5 in)
-    const PUSH_POWER = 4; // how hard a push shoves (m/s)
+    const PUSH_POWER = 9; // how hard a push shoves (m/s): slides them about 6 1/2 ft
+    const PUSH_DECAY = 4.5; // how fast a push wears off (lower = slides further)
     const PUSH_COOLDOWN = 0.8; // seconds between pushes
-    const KNOCK_DECAY = 7; // how fast a knock wears off (lower = slides further)
+    const KNOCK_DECAY = 7; // how fast a sprint bump wears off: slides them about 1 1/2 ft
     const DUMMIES = 4; // practice dummies (solo testing)
 
     const FIELD_HALF = 18; // the field is 36 wide
@@ -99,33 +100,41 @@ Hub.register({
       .rl { position: relative; width: 100%; user-select: none; -webkit-user-select: none; overflow: hidden; border-radius: 12px; }
       .rl canvas { display: block; width: 100%; touch-action: none; }
       .rl .inp-jump:not(.inp-push) { display: none !important; } /* no jumping in this game */
-      .rl-hud { position: absolute; left: 0; right: 0; top: 0; padding: 12px 14px; display: flex;
-                justify-content: space-between; align-items: flex-start; pointer-events: none; gap: 10px; }
-      .rl-players { display: flex; flex-wrap: wrap; gap: 6px; max-width: 60%; }
-      .rl-player { padding: 4px 10px; border-radius: 999px; background: #1f7a63; color: #fff; font-size: .8rem; font-weight: 700; }
+      /* Everything on top of the game is sized from --u = 1% of the game area's height (set in resize()),
+         so short phone screens get smaller text instead of a pile-up. */
+      .rl { --u: 6px; }
+      .rl-hud { position: absolute; left: 0; right: 0; top: 0; padding: calc(var(--u) * 1.6) calc(var(--u) * 2); display: flex;
+                align-items: flex-start; pointer-events: none; gap: calc(var(--u) * 1.6); }
+      .rl-players { display: flex; flex-wrap: wrap; gap: 4px; max-width: 22%; }
+      .rl.tall .rl-players { max-width: 70%; }
+      .rl.tall .rl-top { top: calc(var(--u) * 3 + 40px); max-width: 94%; } /* upright phones: under the timer row */
+      .rl-player { padding: 2px 8px; border-radius: 999px; background: #1f7a63; color: #fff; font-weight: 700;
+                   font-size: clamp(10px, calc(var(--u) * 2.2), 13px); }
       .rl-player.out { background: #2a2a34; color: #888; text-decoration: line-through; }
       .rl-player.finished { background: #2f8f4e; }
-      .rl-timer { font: 800 1.7rem/1 ui-monospace, monospace; color: #fff; text-shadow: 0 2px 8px #000; }
+      .rl-timer { font: 800 clamp(15px, calc(var(--u) * 4.4), 28px)/1 ui-monospace, monospace; color: #fff; text-shadow: 0 2px 8px #000; }
       .rl-timer.low { color: #ff5c5c; }
-      .rl-light { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); pointer-events: none;
-                  padding: 6px 16px; border-radius: 999px; font-weight: 800; letter-spacing: .06em; font-size: .95rem;
-                  background: rgba(0,0,0,.55); color: #fff; transition: background .15s; white-space: nowrap; }
+      .rl-top { position: absolute; left: 50%; top: calc(var(--u) * 1.6); transform: translateX(-50%); pointer-events: none;
+                display: flex; flex-direction: column; align-items: center; gap: calc(var(--u) * 1); max-width: 56%; }
+      .rl-light { padding: calc(var(--u) * .7) calc(var(--u) * 2); border-radius: 999px; font-weight: 800; letter-spacing: .06em;
+                  font-size: clamp(10px, calc(var(--u) * 2.4), 15px); background: rgba(0,0,0,.55); color: #fff;
+                  transition: background .15s; white-space: nowrap; }
       .rl-light.green { background: rgba(31,140,80,.85); }
       .rl-light.red { background: rgba(200,30,50,.9); }
       .rl-edge { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 rgba(255,0,40,0);
                  transition: box-shadow .2s; }
-      .rl-edge.on { box-shadow: inset 0 0 60px 14px rgba(255,0,40,.45); }
-      .rl-chant { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; pointer-events: none;
-                  text-shadow: 0 2px 6px #000; }
-      .rl-chant .ko { font-size: 1.9rem; font-weight: 800; letter-spacing: .08em; }
-      .rl-chant .ro { font-size: .95rem; color: #ddd; margin-top: 2px; }
+      .rl-edge.on { box-shadow: inset 0 0 calc(var(--u) * 8) calc(var(--u) * 2) rgba(255,0,40,.45); }
+      .rl-chant { text-align: center; text-shadow: 0 2px 6px #000; white-space: nowrap; }
+      .rl-chant .ko { font-size: clamp(14px, calc(var(--u) * 4.6), 30px); font-weight: 800; letter-spacing: .06em; }
+      .rl-chant .ro { font-size: clamp(10px, calc(var(--u) * 2), 14px); color: #ddd; margin-top: 2px; }
+      .rl.short .rl-chant .ro { display: none; } /* short screens: just the Korean line */
       .rl-chant span { opacity: .25; transition: opacity .08s; }
       .rl-chant span.on { opacity: 1; color: #ffe08a; }
-      .rl-msg { position: absolute; left: 0; right: 0; top: 52px; text-align: center; pointer-events: none;
-                font-size: 1.1rem; text-shadow: 0 2px 6px #000; white-space: pre-line; padding: 0 12px; }
+      .rl-msg { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); width: min(90%, 640px); text-align: center;
+                pointer-events: none; font-size: clamp(12px, calc(var(--u) * 3.2), 18px); text-shadow: 0 2px 6px #000; white-space: pre-line; }
       .rl-msg.bad { color: #ff5c5c; } .rl-msg.good { color: #3ddc84; }
       .rl-count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
-                  font-size: 6rem; font-weight: 900; color: #ffcc33; text-shadow: 0 4px 20px #000; }
+                  font-size: clamp(36px, calc(var(--u) * 15), 96px); font-weight: 900; color: #ffcc33; text-shadow: 0 4px 20px #000; }
       .rl-lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
                   background: rgba(5,6,14,.72); z-index: 2; overflow: auto; }
       .rl-card { background: var(--panel); border-radius: 14px; padding: 22px; width: min(92%, 400px); max-height: 96%;
@@ -141,8 +150,6 @@ Hub.register({
       .rl-list li { background: #14141f; padding: 6px 10px; border-radius: 6px; }
       .rl-check { display: flex; align-items: flex-start; gap: 10px; font-size: .88rem; color: var(--text) !important; cursor: pointer; }
       .rl-card .rl-check input { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: #ff3b5c; }
-      @media (pointer: coarse) { .rl-chant { bottom: 175px; } }
-      @media (max-width: 600px) { .rl-count { font-size: 4rem; } .rl-chant .ko { font-size: 1.4rem; } .rl-light { top: 54px; } }
     `;
     document.head.appendChild(style);
 
@@ -151,7 +158,7 @@ Hub.register({
     const hud = el("div", "rl-hud");
     const playersEl = el("div", "rl-players");
     const timerEl = el("div", "rl-timer");
-    hud.append(playersEl, timerEl);
+    hud.append(timerEl, playersEl); // timer on the left: the top right is where the full screen button sits
     const lightEl = el("div", "rl-light", "");
     lightEl.hidden = true;
     const edgeEl = el("div", "rl-edge");
@@ -169,7 +176,9 @@ Hub.register({
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputEncoding = THREE.sRGBEncoding;
-    wrap.append(renderer.domElement, edgeEl, hud, lightEl, msg, chantEl, countEl);
+    const topEl = el("div", "rl-top"); // the light, then the chant under it
+    topEl.append(lightEl, chantEl);
+    wrap.append(renderer.domElement, edgeEl, hud, topEl, msg, countEl);
     container.append(wrap);
     const input = Input.create(wrap); // joystick + PUSH (the jump button is hidden by the CSS above)
     wrap.append(lobby);
@@ -188,6 +197,9 @@ Hub.register({
       const h = full ? Math.max(300, container.clientHeight)
         : Math.max(380, Math.round(portrait ? window.innerHeight - 190 : Math.min(w * 0.6, window.innerHeight - 160)));
       renderer.setSize(w, h);
+      wrap.style.setProperty("--u", (Math.min(h, w * 0.75) / 100).toFixed(2) + "px"); // narrow screens size by width
+      wrap.classList.toggle("short", h < 480);
+      wrap.classList.toggle("tall", h > w * 1.1);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     }
@@ -904,7 +916,7 @@ Hub.register({
       const rate = len > 0.05 ? 10 : p.fromSprint ? SPRINT_STOP_RATE : STOP_RATE;
       p.vel.lerp(want, 1 - Math.exp(-dt * rate));
       if (p.vel.lengthSq() < 0.0004) { p.vel.set(0, 0, 0); p.fromSprint = false; }
-      p.knock.multiplyScalar(Math.exp(-dt * KNOCK_DECAY)); // getting shoved
+      p.knock.multiplyScalar(Math.exp(-dt * (p.knockDecay || KNOCK_DECAY))); // getting shoved
       if (p.knock.lengthSq() < 0.0004) p.knock.set(0, 0, 0);
       const P = p.mesh.position;
       P.addScaledVector(p.vel, dt).addScaledVector(p.knock, dt);
@@ -956,14 +968,17 @@ Hub.register({
         if (d < bd && (dx * fx + dz * fz) / Math.max(d, 0.001) > Math.cos(Math.PI / 3)) { bd = d; best = q; }
       }
       tone(150, 0.12, 0.08, "triangle");
-      if (best) knock(best, fx, fz, PUSH_POWER);
+      if (best) knock(best, fx, fz, PUSH_POWER, PUSH_DECAY);
     }
 
-    function knock(q, dx, dz, power) {
+    function knock(q, dx, dz, power, decay = KNOCK_DECAY) {
       q.knock.x += dx * power;
       q.knock.z += dz * power;
-      q.hitT = 0.4;
-      noise(0.1, 0.1, "lowpass", 500);
+      q.knockDecay = decay;
+      q.hitT = 0.55; // stagger
+      if (q.knock.lengthSq() > 0.01) q.mesh.rotation.y = faceAngle(q.knock.x, q.knock.z); // stumble the way they're shoved
+      noise(0.12, power > 5 ? 0.22 : 0.1, "lowpass", 500);
+      tone(power > 5 ? 90 : 120, 0.18, 0.18, "sine");
     }
 
     // ---------- the match ----------
@@ -1166,7 +1181,7 @@ Hub.register({
             musicBox(false);
             buzzer();
             later(() => (countEl.textContent = ""), 700);
-            later(() => { if (!done && msg.className === "rl-msg") say(""); }, 7000); // hide the how-to line
+            say(""); // the how-to line only shows during the countdown
             setPhase("away", TURN_AWAY);
           }
         } else if (phase !== "over") {
