@@ -119,7 +119,9 @@ Hub.register({
     style.textContent = `
       .rl { position: relative; width: 100%; user-select: none; -webkit-user-select: none; overflow: hidden; border-radius: 12px; }
       .rl canvas { display: block; width: 100%; touch-action: none; }
-      .rl .inp-jump:not(.inp-push) { display: none !important; } /* no jumping in this game */
+      .rl .inp-jump:not(.inp-push):not(.rl-sprint) { display: none !important; } /* no jumping in this game */
+      .rl .rl-sprint { position: absolute; z-index: 1; background: rgba(61,180,255,.75); color: #fff; pointer-events: auto; touch-action: none; }
+      .rl .rl-sprint.down { background: rgba(61,180,255,1); }
       /* Everything on top of the game is sized from --u = 1% of the game area's height (set in resize()),
          so short phone screens get smaller text instead of a pile-up. */
       .rl { --u: 6px; }
@@ -190,6 +192,11 @@ Hub.register({
       .rl-cpu-h { font-size: .66rem; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
       .rl-cpu-name { font-size: .85rem; font-weight: 700; white-space: nowrap; }
       .rl-cpu-v { text-align: center; }
+      .rl-vol summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+      .rl-vol-row { display: flex; align-items: center; gap: 10px; font-size: .85rem; color: var(--text) !important; margin-top: 6px; }
+      .rl-vol-row span:first-child { width: 7.5em; flex: none; }
+      .rl-card .rl-vol-row input { flex: 1; padding: 0; accent-color: #ff3b5c; }
+      .rl-vol-n { width: 2.2em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
       .rl-note { font-size: .85rem; color: var(--muted); min-height: 1.2em; }
       .rl-note.bad { color: #ff5c5c; }
       .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
@@ -488,15 +495,24 @@ Hub.register({
     }
 
     // ---------- sound (all made in code, original) ----------
+    // Volume channels, each with its own slider (saved on this device). 0-100.
+    const VOL_CHANNELS = [["announcer", "Announcer"], ["song", "Doll's song"], ["sfx", "Sound effects"], ["music", "Music"]];
+    const vol = (() => {
+      const v = { announcer: 80, song: 100, sfx: 100, music: 100 };
+      try { Object.assign(v, JSON.parse(localStorage.getItem("rl:vol") || "{}")); } catch {}
+      return v;
+    })();
     let actx = null;
-    let master = null;
+    const bus = {}; // one gain per channel (except the announcer, which is the device's speech voice)
+    function applyVolume() {
+      for (const k in bus) bus[k].gain.value = (vol[k] / 100) * 0.9;
+    }
     function audio() {
       if (!actx) {
         try {
           actx = new (window.AudioContext || window.webkitAudioContext)();
-          master = actx.createGain();
-          master.gain.value = 0.9;
-          master.connect(actx.destination);
+          ["song", "sfx", "music"].forEach((k) => { bus[k] = actx.createGain(); bus[k].connect(actx.destination); });
+          applyVolume();
         } catch { actx = null; }
       }
       if (actx && actx.state === "suspended") actx.resume();
@@ -508,12 +524,12 @@ Hub.register({
       g.gain.exponentialRampToValueAtTime(peak, t + a);
       g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
     }
-    function tone(freq, dur = 0.25, vol = 0.15, type = "sine", when = 0) {
+    function tone(freq, dur = 0.25, level = 0.15, type = "sine", when = 0, ch = "sfx") {
       const a = audio(); if (!a) return;
       const t = a.currentTime + when;
       const o = a.createOscillator(); o.type = type; o.frequency.value = freq;
-      const g = a.createGain(); env(g, t, 0.01, vol, dur);
-      o.connect(g).connect(master);
+      const g = a.createGain(); env(g, t, 0.01, level, dur);
+      o.connect(g).connect(bus[ch]);
       o.start(t); o.stop(t + dur + 0.05);
     }
     function noise(dur, vol, filterType, freq, when = 0) {
@@ -526,7 +542,7 @@ Hub.register({
       const src = a.createBufferSource(); src.buffer = buf;
       const f = a.createBiquadFilter(); f.type = filterType; f.frequency.value = freq;
       const g = a.createGain(); env(g, t, 0.005, vol, dur);
-      src.connect(f).connect(g).connect(master);
+      src.connect(f).connect(g).connect(bus.sfx);
       src.start(t);
     }
     // the doll's singing voice: a buzzy tone shaped into vowels (two formant filters)
@@ -549,7 +565,7 @@ Hub.register({
         const g = a.createGain(); g.gain.value = v;
         o.connect(bp).connect(g).connect(out);
       }
-      out.connect(master);
+      out.connect(bus.song);
       o.start(t); vib.start(t);
       o.stop(t + dur + 0.1); vib.stop(t + dur + 0.1);
     }
@@ -562,7 +578,7 @@ Hub.register({
       o.frequency.linearRampToValueAtTime(70, t + dur);
       const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 420;
       const g = a.createGain(); env(g, t, 0.05, 0.28, dur);
-      o.connect(f).connect(g).connect(master);
+      o.connect(f).connect(g).connect(bus.sfx);
       o.start(t); o.stop(t + dur + 0.1);
       noise(dur * 0.8, 0.05, "bandpass", 1800);
     }
@@ -587,9 +603,9 @@ Hub.register({
       const step = () => {
         const [n, len] = BOX[k % BOX.length];
         const f = 440 * Math.pow(2, (n - 69) / 12);
-        tone(f, 1.2, 0.06, "triangle");
-        tone(f * 2, 0.5, 0.015, "sine");
-        if (k % 4 === 0) tone(f / 2, 0.9, 0.03, "sine");
+        tone(f, 1.2, 0.06, "triangle", 0, "music");
+        tone(f * 2, 0.5, 0.015, "sine", 0, "music");
+        if (k % 4 === 0) tone(f / 2, 0.9, 0.03, "sine", 0, "music");
         k++;
         boxTimer = setTimeout(step, len * beat * 1000);
       };
@@ -600,7 +616,8 @@ Hub.register({
       try {
         if (!window.speechSynthesis) return;
         const u = new SpeechSynthesisUtterance(text);
-        u.rate = 0.95; u.pitch = 0.75; u.volume = 0.8; u.lang = "en-US";
+        if (!vol.announcer) return;
+        u.rate = 0.95; u.pitch = 0.75; u.volume = vol.announcer / 100; u.lang = "en-US";
         window.speechSynthesis.speak(u);
       } catch {}
     }
@@ -974,6 +991,21 @@ Hub.register({
     // sprint: double-tap a direction and hold it (keyboard, stick or phone joystick), or hold Shift on a keyboard
     const tap = { held: false, downAt: -9, upAt: -9, dir: null, sprint: false };
     let shiftHeld = false;
+    let sprintBtnHeld = false;
+    const sprintBtn = el("div", "inp-jump rl-sprint", "SPRINT");
+    sprintBtn.hidden = true;
+    sprintBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); sprintBtnHeld = true; sprintBtn.classList.add("down"); });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => sprintBtn.addEventListener(ev, () => { sprintBtnHeld = false; sprintBtn.classList.remove("down"); }));
+    wrap.insertBefore(sprintBtn, lobby);
+    function placeSprintBtn() { // same spot and size as the player's JUMP button setting (shared phone layout)
+      let j = { x: 0.85, y: 0.8, size: 96 };
+      try { const l = JSON.parse(localStorage.getItem("inp:layout") || "null"); if (l && l.jump) j = l.jump; } catch {}
+      sprintBtn.style.width = sprintBtn.style.height = j.size + "px";
+      sprintBtn.style.left = `calc(${(j.x * 100).toFixed(2)}% - ${j.size / 2}px)`;
+      sprintBtn.style.top = `calc(${(j.y * 100).toFixed(2)}% - ${j.size / 2}px)`;
+      sprintBtn.style.fontSize = Math.max(11, Math.round(j.size * 0.16)) + "px";
+    }
+    function showSprintBtn(on) { placeSprintBtn(); sprintBtn.hidden = !(on && input.isTouch); }
     const onShift = (e) => { if (e.key === "Shift") shiftHeld = e.type === "keydown"; };
     const offShift = () => (shiftHeld = false);
     document.addEventListener("keydown", onShift);
@@ -995,7 +1027,7 @@ Hub.register({
         tap.sprint = false;
       }
       tap.held = held;
-      return { mv, len, sprint: (tap.sprint || shiftHeld) && held };
+      return { mv, len, sprint: (tap.sprint || shiftHeld || sprintBtnHeld) && held };
     }
 
     const live = (p) => started && !done && countdown <= 0 && !p.out && !p.finished;
@@ -1243,7 +1275,9 @@ Hub.register({
       p.dead = true;
       p.deadAt = time;
       hitSound();
-      announce(`Player ${p.num}, eliminated.`);
+      // the announcer stops once every real player is out (or time's up): no reading out the rest
+      const realLeft = order.some((q) => !q.cpu && !q.dummy && !q.left && !q.out && !q.finished);
+      if (phase !== "over" && (realLeft || (!p.cpu && !p.dummy))) announce(`Player ${p.num}, eliminated.`);
       if (p.id === myId) {
         const traitor = p.betrayed && order.find((q) => q.id === p.by);
         say(`Player ${p.num}, eliminated.` + (traitor ? `\nBetrayed by ${traitor.name}` : ""), "bad");
@@ -1278,6 +1312,7 @@ Hub.register({
     function fastForward() {
       simulating = true;
       input.showTouch(false);
+      showSprintBtn(false);
       say("Playing out the rest for the computer players…");
       const chunk = () => {
         if (!simulating) return;
@@ -1308,6 +1343,7 @@ Hub.register({
       setPhase("over");
       chantEl.hidden = true;
       input.showTouch(false);
+      showSprintBtn(false);
       lightEl.hidden = true;
       const m = me();
       if (m && m.finished) {
@@ -1354,6 +1390,7 @@ Hub.register({
       timeouts.length = 0;
       timers.length = 0;
       simulating = false;
+      showSprintBtn(false);
       musicBox(false);
       order.forEach((p) => {
         scene.remove(p.mesh);
@@ -1392,9 +1429,10 @@ Hub.register({
       setDoll(0, 0); // she faces you while the clock counts down
       setPhase("pre");
       input.showTouch(true);
+      showSprintBtn(true);
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move · PUSH to shove · double-tap and hold to sprint." : "WASD / arrows to move · Shift to sprint · F to push") +
+      say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove." : "WASD / arrows to move · Shift to sprint · F to push") +
         "\nMove only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
@@ -1496,9 +1534,9 @@ Hub.register({
       lobbyListEl = el("ul", "rl-list");
       lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
 
-      card.append(soloCpus, dumRow, solo, el("label", "", "Play online · your name"), nameIn, host,
+      card.append(soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift, or double-tap a direction and hold it. " +
+        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. " +
           "Push: F · X / □ on a controller · PUSH on a phone."));
       lobby.append(card);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
@@ -1738,7 +1776,7 @@ Hub.register({
       }
       const leave = el("button", "alt", "Leave lobby");
       leave.onclick = () => { leaveRoom(); resetMatch(); results = null; mode = "lobby"; myId = "solo"; showMenu(); };
-      card.append(el("div", "rl-note" + (bad ? " bad" : ""), note), leave);
+      card.append(el("div", "rl-note" + (bad ? " bad" : ""), note), volumePanel(), leave);
       lobby.append(card);
     }
 
@@ -1833,6 +1871,32 @@ Hub.register({
       }
       box.append(el("div", "rl-help", TRAITS.map(([, label, help]) => `${label}: ${help.toLowerCase()}.`).join(" ") + " 1 = least, 5 = most."));
       return box;
+    }
+
+    function volumePanel() {
+      const det = el("details", "rl-vol");
+      det.append(el("summary", "", "🔊 Volume"));
+      VOL_CHANNELS.forEach(([key, label]) => {
+        const row = el("label", "rl-vol-row");
+        const r = el("input");
+        r.type = "range"; r.min = 0; r.max = 100; r.value = vol[key]; r.id = "rl-vol-" + key;
+        const num = el("span", "rl-vol-n", String(vol[key]));
+        r.oninput = () => {
+          vol[key] = +r.value;
+          num.textContent = r.value;
+          applyVolume();
+          try { localStorage.setItem("rl:vol", JSON.stringify(vol)); } catch {}
+        };
+        r.onchange = () => { // a sample of that channel
+          if (key === "announcer") announce("Player 456, eliminated.");
+          else if (key === "song") sing(0, 0.4, 530);
+          else if (key === "music") tone(659, 0.8, 0.06, "triangle", 0, "music");
+          else shotSound();
+        };
+        row.append(el("span", "", label), r, num);
+        det.append(row);
+      });
+      return det;
     }
 
     // a small picture of a character's face, for the lobby (made once per character)
@@ -1957,8 +2021,10 @@ Hub.register({
         camera.updateProjectionMatrix();
       } else {
         const focus = mine ? mine.mesh.position : new THREE.Vector3(0, 0, START_Z);
-        camGoal = new THREE.Vector3(focus.x * 0.7, 4.6, focus.z + 7.5);
-        lookGoal = new THREE.Vector3(focus.x * 0.4, 2.2, focus.z - 12);
+        // narrow (upright phone) screens: follow you straight on, a bit further back, so you stay in view
+        const narrow = camera.aspect < 1;
+        camGoal = narrow ? new THREE.Vector3(focus.x, 5.4, focus.z + 9.5) : new THREE.Vector3(focus.x * 0.7, 4.6, focus.z + 7.5);
+        lookGoal = narrow ? new THREE.Vector3(focus.x, 1.6, focus.z - 10) : new THREE.Vector3(focus.x * 0.4, 2.2, focus.z - 12);
       }
       if (spectating !== wasSpectating) { // cut, don't swoop
         wasSpectating = spectating;
