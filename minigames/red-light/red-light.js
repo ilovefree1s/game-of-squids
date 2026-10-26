@@ -210,7 +210,8 @@ Hub.register({
       .rl-note.bad { color: #ff5c5c; }
       .rl-player.ally { box-shadow: 0 0 0 2px #3ddc84 inset; }
       .rl-player.me { box-shadow: 0 0 0 2px #ffcc33 inset; }
-      .rl-players.pick .rl-player { pointer-events: auto; cursor: pointer; }
+      .rl-players.pick .rl-player, .rl-player.cpus { pointer-events: auto; cursor: pointer; }
+      .rl-player.cpus { background: rgba(40,40,60,.85); }
       .rl-player.doll { background: #6b2a8a; }
       .rl-player.watching { outline: 2px solid #fff; outline-offset: 1px; }
       .rl-players.pick { max-width: 30%; } /* wrap into rows instead of running into the light label */
@@ -1335,7 +1336,17 @@ Hub.register({
         d.onclick = () => { specTarget = null; say(""); renderPlayers(); };
         playersEl.append(d);
       }
+      // people get their own chips; computer players are one summary chip (tap it to see them all)
+      const bots = order.filter((p) => p.cpu || p.dummy);
+      if (bots.length) {
+        const left = bots.filter((p) => !p.out && !p.finished).length, across = bots.filter((p) => p.finished).length;
+        const sum = el("div", "rl-player cpus" + (showBots ? " open" : ""),
+          `🤖 ${left} left${across ? ` · ✓ ${across}` : ""} ${showBots ? "▴" : "▾"}`);
+        sum.onclick = () => { showBots = !showBots; renderPlayers(); };
+        playersEl.append(sum);
+      }
       order.forEach((p) => {
+        if ((p.cpu || p.dummy) && !showBots && !(watching && specTarget === p.id)) return;
         let cls = "rl-player";
         if (p.out) cls += " out";
         else if (p.finished) cls += " finished";
@@ -1349,6 +1360,7 @@ Hub.register({
       });
     }
     let specTarget = null; // dead players: whose view they're watching (null = the doll's eyes)
+    let showBots = false; // the computer players' chips are hidden until you tap their summary chip
     let lastClock = "";
     function renderTimer() {
       const s = started ? clockText(Math.max(0, Math.ceil(clockLeft))) : "";
