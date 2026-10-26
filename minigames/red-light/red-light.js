@@ -168,10 +168,10 @@ Hub.register({
                  transition: box-shadow .2s; }
       .rl-edge.on { box-shadow: inset 0 0 calc(var(--u) * 8) calc(var(--u) * 2) rgba(255,0,40,.45); }
       .rl-chant { text-align: center; text-shadow: 0 2px 6px #000; white-space: nowrap; }
-      .rl-chant .ko { font-size: clamp(14px, calc(var(--u) * 4.6), 30px); font-weight: 800; letter-spacing: .06em; }
-      .rl-chant .ro { font-size: clamp(10px, calc(var(--u) * 2), 14px); color: #ddd; margin-top: 2px; }
+      .rl-chant .ko { font-size: clamp(12px, calc(var(--u) * 3), 20px); font-weight: 800; letter-spacing: .06em; }
+      .rl-chant .ro { font-size: clamp(9px, calc(var(--u) * 1.6), 12px); color: #ddd; margin-top: 1px; }
       .rl.short .rl-chant .ro { display: none; } /* short screens: just the Korean line */
-      .rl-chant span { opacity: .25; transition: opacity .08s; }
+      .rl-chant span { opacity: 0; } /* each syllable appears only when she sings it (no peeking at what's left) */
       .rl-chant span.on { opacity: 1; color: #ffe08a; }
       .rl-msg { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); width: min(90%, 640px); text-align: center;
                 pointer-events: none; font-size: clamp(12px, calc(var(--u) * 3.2), 18px); text-shadow: 0 2px 6px #000; white-space: pre-line; }
@@ -825,7 +825,7 @@ Hub.register({
       if (p === "sing") {
         chant = data || makeChant();
         sungUpTo = -1;
-        // (no subtitles: in the show you only hear her, so you can't see how close she is to turning)
+        chantEl.hidden = false; // small subtitles: each syllable appears the moment she sings it (for players without sound)
         koSpans.forEach((s) => s.classList.remove("on"));
         roSpans.forEach((s) => s.classList.remove("on"));
       }
