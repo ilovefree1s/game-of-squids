@@ -2288,13 +2288,15 @@ Hub.register({
         const t = setup.list[i] || randomTraits();
         out.push({ id: "cpu" + i, name: "CPU", num, char: "tracksuit", cpu: true, agg: t.agg, des: t.des, cow: t.cow, ref: t.ref || 3 });
       }
-      // secret alliances among the computer players: groups of 2-3 (about 1 in 4 stay on their own),
-      // and about 1 in 5 will turn on their allies anyway
+      // secret alliances among the computer players: each game, somewhere from 20% to 70% of them team up, in groups
+      // of 2 to 5 (smaller groups more likely); the rest play on their own. About 1 in 5 will turn on their allies anyway.
       const shuffled = [...out].sort(() => Math.random() - 0.5);
+      const joining = Math.round(shuffled.length * rand(0.2, 0.7));
       let team = 0;
-      for (let i = 0; i < shuffled.length;) {
-        if (Math.random() < 0.25 || i === shuffled.length - 1) { i++; continue; }
-        const size = Math.min(shuffled.length - i, Math.random() < 0.5 ? 2 : 3);
+      for (let i = 0; joining - i >= 2;) {
+        const r = Math.random();
+        const size = Math.min(joining - i, r < 0.4 ? 2 : r < 0.7 ? 3 : r < 0.9 ? 4 : 5);
+        if (size < 2) break;
         team++;
         for (let k = 0; k < size; k++) shuffled[i + k].team = team;
         i += size;
@@ -2371,7 +2373,7 @@ Hub.register({
         row.append(el("b", "", label), el("div", "", help + "."), el("div", "rl-legend-ends", `1: ${one} · 5: ${five}`));
         legend.append(row);
       });
-      legend.append(el("div", "rl-legend-row", "Alliances: computer players secretly team up in twos and threes and leave each other alone, but about 1 in 5 will turn on their allies anyway."));
+      legend.append(el("div", "rl-legend-row", "Alliances: each game, some of the computer players (from about a fifth to two thirds of them) secretly team up in groups of 2 to 5 and leave each other alone. The rest play on their own. About 1 in 5 will turn on their allies anyway."));
       legend.append(el("div", "rl-legend-row", "As the clock runs down, they all sprint and attack more, and about 1 in 4 of them get braver (less Cowardice). Reflexes never change."));
       box.append(legend);
       return box;
