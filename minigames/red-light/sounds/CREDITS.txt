@@ -17,3 +17,7 @@ scream_f1.mp3 - scream_f4.mp3 (female screams, for the Rogue, Hooded Rogue and S
   CC-BY and CC0 sounds, see license.txt in female_screams.zip for each original author).
   https://opengameart.org/content/female-screams
   Converted from .ogg to .mp3 so every browser can play them.
+
+doll_0.mp3 - doll_9.mp3 (the doll's singing voice)
+  Made for this game from the Korean text-to-speech voice "ko_KO kss_low" (Mycroft mimic3-voices, CC0),
+  turned into a sung child-like voice. How: see voice-tools/README.txt.
