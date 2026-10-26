@@ -107,7 +107,7 @@ const Input = (() => {
         if (b(15)) x = 1;
         if (b(12)) y = -1;
         if (b(13)) y = 1;
-        const j = b(0);
+        const j = b(padJump);
         if (j && !padJumpWas[p.index]) jumpQueued = true;
         padJumpWas[p.index] = j;
         const pu = b(2);
@@ -134,6 +134,7 @@ const Input = (() => {
     pushBtn.textContent = "PUSH";
     ui.append(stick, jumpBtn, pushBtn);
     const hasPush = opts.push !== false; // Input.create(el, { push: false }) hides the PUSH button
+    const padJump = opts.padJump ?? 0; // which controller button jumps: 0 = A / ✕ (default), 1 = B / ○
     if (!hasPush) pushBtn.style.display = "none";
     parent.append(ui);
 

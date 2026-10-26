@@ -65,10 +65,14 @@ Hub.register({
     const MAX_ONLINE = 8;
     const MAX_CPUS = 50; // computer players, on top of the real ones
     const JUMP_V = 7, GRAVITY = 24; // same jump as Glass Bridge: about 3 ft high, a bit over ½ s in the air
-    const TRAITS = [["agg", "Aggression", "How often they try to kill players closer to the finish"],
-      ["des", "Desperation", "How much they sprint"],
-      ["cow", "Cowardice", "How long they wait to run, and how early they stop"],
-      ["ref", "Reflexes", "How fast they stop when she turns around"]];
+    // [key, name, what it does, what 1 means, what 5 means] (matches the numbers in the CPU brain below)
+    const TRAITS = [["agg", "Aggression", "How often they go after a player closer to the finish, to shove them just before she turns",
+        "never", "almost every round"],
+      ["des", "Desperation", "How often they sprint (faster, but takes twice as long to stop)", "hardly ever", "almost every round"],
+      ["cow", "Cowardice", "How long they wait before running, and how early in her song they stop",
+        "runs right away and keeps going until she turns", "waits about a second, and stops about a third of the way into the song"],
+      ["ref", "Reflexes", "How fast they stop when she starts to turn around",
+        "about ½ s: often too slow, and shot", "under ¼ s: almost always stops in time"]];
     const SEND_EVERY = 0.1; // online: seconds between position updates
     const KILL_CREDIT = 1.5; // caught within this many seconds of a shove or bump = the shover gets the kill
     const FT = 3.281; // feet per meter (distances shown to players are in feet)
@@ -123,6 +127,12 @@ Hub.register({
     style.textContent = `
       .rl { position: relative; width: 100%; user-select: none; -webkit-user-select: none; overflow: hidden; border-radius: 12px; }
       .rl canvas { display: block; width: 100%; touch-action: none; }
+      /* phone buttons: like an Xbox controller without Y. A (bottom) SPRINT, B (right) JUMP, X (left) PUSH, all one size */
+      .rl .inp-jump { width: var(--bs) !important; height: var(--bs) !important; left: auto !important; top: auto !important;
+                      font-size: calc(var(--bs) * .2) !important; }
+      .rl .rl-sprint { right: calc(14px + var(--bs) * .95) !important; bottom: 14px !important; }
+      .rl .inp-jump:not(.inp-push):not(.rl-sprint) { right: 14px !important; bottom: calc(14px + var(--bs) * .95) !important; }
+      .rl .inp-push { right: calc(14px + var(--bs) * 1.9) !important; bottom: calc(14px + var(--bs) * .95) !important; }
       .rl .rl-sprint { position: absolute; z-index: 1; background: rgba(61,180,255,.75); color: #fff; pointer-events: auto; touch-action: none; }
       .rl .rl-sprint.down { background: rgba(61,180,255,1); }
       .rl-cpu-all { font-weight: 700; color: #ffd34d; }
@@ -130,7 +140,7 @@ Hub.register({
                    font-size: clamp(12px, calc(var(--u) * 2.8), 16px); padding: 6px 14px; }
       /* Everything on top of the game is sized from --u = 1% of the game area's height (set in resize()),
          so short phone screens get smaller text instead of a pile-up. */
-      .rl { --u: 6px; }
+      .rl { --u: 6px; --bs: clamp(64px, calc(var(--u) * 17), 80px); }
       .rl-hud { position: absolute; left: 0; right: 0; top: 0; padding: calc(var(--u) * 1.6) calc(var(--u) * 2); display: flex;
                 align-items: flex-start; pointer-events: none; gap: calc(var(--u) * 1.6); }
       .rl-players { display: flex; flex-wrap: wrap; gap: 4px; max-width: 22%; }
@@ -190,7 +200,24 @@ Hub.register({
       .rl-asks { background: #2b1f33; border: 1px solid #6b3a7a; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .rl-asks .rl-row button { flex: none; padding: 5px 12px; font-size: .85rem; }
       .rl-result b { color: var(--text); }
-      .rl-result .rl-stats { font-size: .78rem; color: var(--muted); margin-top: 3px; }
+      .rl-result .rl-stats { font-size: .8rem; color: var(--muted); margin-top: 3px; }
+      .rl-legend { margin-top: 10px; padding: 10px; background: #14141f; border-radius: 8px; font-size: .85rem; color: var(--text); }
+      .rl-legend-h { font-weight: 700; color: #ffd34d; margin-bottom: 6px; }
+      .rl-legend-row { margin-top: 6px; line-height: 1.35; }
+      .rl-legend-ends { color: var(--muted); font-size: .8rem; }
+      .rl-you { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: 10px; background: #14141f; }
+      .rl-you.ok { box-shadow: inset 0 0 0 2px #2fbf71; } .rl-you.bad { box-shadow: inset 0 0 0 2px #e04848; }
+      .rl-you-place { font-size: 2.6rem; font-weight: 800; line-height: 1; color: #ffd34d; }
+      .rl-you-of { margin-top: 4px; color: var(--text); font-size: .95rem; }
+      .rl-list li.rl-result { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-left: 4px solid #555; }
+      .rl-list li.rl-result.ok { border-left-color: #2fbf71; }
+      .rl-list li.rl-result.dead { border-left-color: #e04848; }
+      .rl-list li.rl-result.mine { background: #24243a; box-shadow: inset 0 0 0 2px #ffd34d; }
+      .rl-place { min-width: 2.6em; font-weight: 800; font-size: 1.15rem; color: var(--muted); }
+      .rl-place.p1 { color: #ffd34d; } .rl-place.p2 { color: #d6dde6; } .rl-place.p3 { color: #e0975a; }
+      .rl-rbody { flex: 1; min-width: 0; }
+      .rl-rname { font-weight: 700; font-size: 1.02rem; color: var(--text); }
+      .rl-how { font-size: .9rem; color: var(--text); opacity: .9; margin-top: 2px; }
       .rl-betrayed { color: #ff5c5c; font-weight: 800; }
       .rl-cpus { background: #14141f; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .rl-cpus .rl-row select { width: auto; padding: 4px 8px; }
@@ -248,7 +275,8 @@ Hub.register({
     topEl.append(lightEl, chantEl);
     wrap.append(renderer.domElement, edgeEl, hud, topEl, msg, countEl);
     container.append(wrap);
-    const input = Input.create(wrap); // joystick + JUMP + PUSH (SPRINT is added just above PUSH)
+    // controller like the phone buttons: A sprint (hold), B jump, X push
+    const input = Input.create(wrap, { padJump: 1 }); // joystick + JUMP + PUSH (SPRINT is added below)
     wrap.append(lobby);
     input.showTouch(false);
 
@@ -1084,6 +1112,10 @@ Hub.register({
     const tap = { held: false, downAt: -9, upAt: -9, dir: null, sprint: false };
     let shiftHeld = false;
     let sprintBtnHeld = false;
+    const padSprint = () => { // A / ✕ on a controller, held
+      try { for (const g of navigator.getGamepads ? navigator.getGamepads() : []) if (g && g.buttons[0] && g.buttons[0].pressed) return true; } catch {}
+      return false;
+    };
     const sprintBtn = el("div", "inp-jump rl-sprint", "SPRINT");
     sprintBtn.hidden = true;
     sprintBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); sprintBtnHeld = true; sprintBtn.classList.add("down"); });
@@ -1119,7 +1151,7 @@ Hub.register({
         tap.sprint = false;
       }
       tap.held = held;
-      return { mv, len, sprint: (tap.sprint || shiftHeld || sprintBtnHeld) && held };
+      return { mv, len, sprint: (tap.sprint || shiftHeld || sprintBtnHeld || padSprint()) && held };
     }
 
     const live = (p) => started && !done && countdown <= 0 && !p.out && !p.finished;
@@ -1852,8 +1884,8 @@ Hub.register({
 
       card.append(timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
-        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
-          "Push: F · X / □ on a controller · PUSH on a phone. Jump (just for fun, but it counts as moving on a red light): Space · A / ✕ · JUMP on a phone."));
+        el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift, A / ✕ on a controller, or SPRINT on a phone, or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
+          "Push: F · X / □ on a controller · PUSH on a phone. Jump (just for fun, but it counts as moving on a red light): Space · B / ○ · JUMP on a phone."));
       putCard(card, "menu", keepTop);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;
@@ -2122,30 +2154,49 @@ Hub.register({
     }
 
     // The results of a game: how everyone did, how they died, and their shoving stats.
+    // The results of a game: your place, how everyone did, how they died, and their shoving stats.
+    // Place: everyone who made it, fastest first, then everyone else by how far they got.
+    const ordinal = (n) => n + ([, "st", "nd", "rd"][(n % 100 >> 3) === 1 ? 0 : n % 10] || "th");
     function resultsList(rs) {
-      const ul = el("ul", "rl-list");
+      const wrapEl = el("div", "rl-results");
       const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
+      const byPlace = [...rs].sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || (b.ok ? (b.left || 0) - (a.left || 0) : 0) || b.distFt - a.distFt);
+      const place = new Map(byPlace.map((r, i) => [r, i + 1]));
+      const mine = rs.find((r) => r.mine);
+      if (mine) {
+        const top = el("div", "rl-you " + (mine.ok ? "ok" : "bad"));
+        top.append(el("div", "rl-you-place", ordinal(place.get(mine))), el("div", "rl-you-of", `of ${rs.length} · ${mine.ok ? "you made it!" : "you didn't make it"}`));
+        wrapEl.append(top);
+      }
+      const ul = el("ul", "rl-list");
       const rank = (r) => (r.mine ? 0 : r.cpu ? 2 : 1);
-      [...rs].sort((a, b) => rank(a) - rank(b) || (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || (b.left || 0) - (a.left || 0) || b.distFt - a.distFt).forEach((r) => {
-        const li = el("li", "rl-result");
+      [...rs].sort((a, b) => rank(a) - rank(b) || place.get(a) - place.get(b)).forEach((r) => {
+        const n = place.get(r);
+        const li = el("li", "rl-result" + (r.mine ? " mine" : "") + (r.ok ? " ok" : r.alive ? "" : " dead"));
+        li.append(el("div", "rl-place" + (r.ok && n <= 3 ? " p" + n : ""), ordinal(n)));
+        const body = el("div", "rl-rbody");
+        body.append(el("div", "rl-rname", `${r.num} ${r.name}${r.mine ? " (you)" : ""}`));
         let how;
-        if (r.ok) how = `made it with ${clockText(Math.ceil(r.left || 0))} left`;
-        else if (r.alive) how = `still on the field · made it ${r.distFt} ft`;
+        if (r.ok) how = `✅ Made it · ${clockText(Math.ceil(r.left || 0))} left`;
+        else if (r.alive) how = `🏃 Still on the field · ${r.distFt} ft`;
         else {
           how = r.cause === "push" ? `pushed into the line of fire by ${r.by}`
             : r.cause === "bump" ? `bumped into the line of fire by ${r.by}` : CAUSE[r.cause] || "eliminated";
-          how += ` · made it ${r.distFt} ft`;
+          how = `💀 ${how[0].toUpperCase() + how.slice(1)} · ${r.distFt} ft`;
         }
-        li.append(el("b", "", `${r.ok ? "✅" : r.alive ? "🏃" : "💀"} ${r.num} ${r.name}${r.mine ? " (you)" : ""}`), el("span", "", " · " + how));
-        if (r.betrayed) li.append(el("span", "rl-betrayed", ` · BETRAYED by ${r.by}`));
-        const st = r.stats;
-        const bits = [`pushes ${st.pushes} (${st.landed} landed)`, `got pushed ${st.gotPushed}`,
-          `sprint bumps ${st.bumpsGiven} given / ${st.bumpsTaken} taken`];
-        if (st.kills.length) bits.push(`got ${st.kills.join(", ")} killed`);
-        li.append(el("div", "rl-stats", bits.join(" · ")));
+        body.append(el("div", "rl-how", how));
+        if (r.betrayed) body.append(el("div", "rl-betrayed", `BETRAYED by ${r.by}`));
+        const st = r.stats, bits = []; // only what actually happened
+        if (st.pushes) bits.push(`✋ ${st.pushes} push${st.pushes > 1 ? "es" : ""} (${st.landed} landed)`);
+        if (st.gotPushed) bits.push(`got pushed ${st.gotPushed}`);
+        if (st.bumpsGiven || st.bumpsTaken) bits.push(`💥 bumps ${st.bumpsGiven} given / ${st.bumpsTaken} taken`);
+        if (st.kills.length) bits.push(`☠ got ${st.kills.join(", ")} killed`);
+        if (bits.length) body.append(el("div", "rl-stats", bits.join(" · ")));
+        li.append(body);
         ul.append(li);
       });
-      return ul;
+      wrapEl.append(ul);
+      return wrapEl;
     }
 
     // Everyone starts at a random spot in a loose crowd behind the start line (3 rows, about 5 ft apart).
@@ -2241,7 +2292,15 @@ Hub.register({
         mix.onclick = () => { setup.list = setup.list.map(() => randomTraits()); onChange(); };
         box.append(mix);
       }
-      box.append(el("div", "rl-help", TRAITS.map(([, label, help]) => `${label}: ${help.toLowerCase()}.`).join(" ") + " 1 = least, 5 = most."));
+      const legend = el("div", "rl-legend");
+      legend.append(el("div", "rl-legend-h", "What the numbers mean (1 = least, 5 = most)"));
+      TRAITS.forEach(([, label, help, one, five]) => {
+        const row = el("div", "rl-legend-row");
+        row.append(el("b", "", label), el("div", "", help + "."), el("div", "rl-legend-ends", `1: ${one} · 5: ${five}`));
+        legend.append(row);
+      });
+      legend.append(el("div", "rl-legend-row", "As the clock runs down, every computer player gets braver: they wait less, stop later and sprint more."));
+      box.append(legend);
       return box;
     }
 
