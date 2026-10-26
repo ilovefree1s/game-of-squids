@@ -594,7 +594,42 @@ Hub.register({
     }
     // the doll's singing voice: a buzzy tone shaped into vowels (two formant filters)
     const FORMANTS = { a: [850, 1350], i: [330, 2500], u: [370, 900], o: [500, 950], eo: [620, 1150], eu: [380, 1550] };
+    // Her voice: 10 recorded sung syllables (sounds/doll_0.mp3 ... doll_9.mp3, each already on its melody note, made
+    // at a base of 530 Hz). Each is cut to the note's length, nudged to this song's pitch, and given a hollow echo.
+    // Until the files have loaded, the old made-in-code voice sings instead.
+    let echo = null;
+    const NOTE_GAIN = 0.36;
+    function dollEcho(a) {
+      if (echo) return echo;
+      const len = Math.floor(a.sampleRate * 0.6), ir = a.createBuffer(1, len, a.sampleRate), d = ir.getChannelData(0);
+      for (let k = 0; k < len; k++) d[k] = (Math.random() * 2 - 1) * Math.exp(-k / (0.12 * a.sampleRate)) * 0.08;
+      const conv = a.createConvolver(); conv.normalize = false; conv.buffer = ir;
+      const wet = a.createGain(); wet.gain.value = 0.1;
+      conv.connect(wet).connect(bus.song);
+      return (echo = conv);
+    }
+    function singSample(i, dur, base) {
+      const a = audio();
+      const b = decoded["doll_" + i + ".mp3"];
+      if (!a || !(b instanceof AudioBuffer)) return false;
+      const t = a.currentTime;
+      const src = a.createBufferSource();
+      src.buffer = b;
+      src.playbackRate.value = base / 530;
+      const g = a.createGain();
+      const len = Math.min(dur, b.duration / src.playbackRate.value);
+      g.gain.setValueAtTime(NOTE_GAIN, t);
+      g.gain.setValueAtTime(NOTE_GAIN, t + Math.max(0.01, len - 0.04));
+      g.gain.linearRampToValueAtTime(0.0001, t + len); // the note ends with a quick fade
+      src.connect(g);
+      g.connect(bus.song);
+      g.connect(dollEcho(a));
+      src.start(t);
+      src.stop(t + len + 0.05);
+      return true;
+    }
     function sing(i, dur, base) {
+      if (singSample(i, dur, base)) return;
       const a = audio(); if (!a) return;
       const t = a.currentTime;
       const f0 = base * Math.pow(2, MELODY[i] / 12);
@@ -622,6 +657,7 @@ Hub.register({
       headshot: ["squish_06.mp3"],
       screamM: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `scream_m${i}.mp3`), // male screams ("aargh male screams")
       screamF: [1, 2, 3, 4].map((i) => `scream_f${i}.mp3`), // female screams ("female screams")
+      doll: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `doll_${i}.mp3`), // her singing voice (see sounds/voice-tools)
     };
     const decoded = {}; // file -> AudioBuffer (or a promise while it loads)
     function loadSamples() {
@@ -1799,6 +1835,7 @@ Hub.register({
       if (order.length) resetMatch();
       oneWinner = null;
       shotQueue.length = 0;
+      loadSamples(); // her voice, the squish and the screams (if they aren't loaded yet)
       matchTime = minutes * 60;
       order = roster.map((r, k) => addPlayer(r, k, roster.length));
       spawnSnipers();
