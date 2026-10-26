@@ -519,7 +519,7 @@ Hub.register({
     let actx = null;
     const bus = {}; // one gain per channel (except the announcer, which is the device's speech voice)
     function applyVolume() {
-      for (const k in bus) bus[k].gain.value = (vol[k] / 100) * 0.9;
+      for (const k in bus) bus[k].gain.value = (vol[k] / 100) * 0.9 * (k === "song" ? 2 : 1); // the doll: twice as loud
     }
     function audio() {
       if (!actx) {
@@ -2518,7 +2518,7 @@ Hub.register({
     }
 
     // for automated testing only: lets a test script read the game's state
-    wrap.rlDebug = { get screams() { return lastScreams; }, set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
+    wrap.rlDebug = { get bus() { return bus; }, get screams() { return lastScreams; }, set cam(v) { debugCam = v; }, set steps(v) { debugSteps = v; }, get phase() { return phase; }, get phaseT() { return phaseT; }, get time() { return time; }, get order() { return order; }, get clockLeft() { return clockLeft; }, set clockLeft(v) { clockLeft = v; }, me, snipers, camera, doll };
 
     function onHidden() {
       if (!document.hidden || mode !== "online" || !started || done || !leader()) return;
