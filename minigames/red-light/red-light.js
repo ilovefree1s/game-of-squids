@@ -663,6 +663,7 @@ Hub.register({
       screamM: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `scream_m${i}.mp3`), // male screams ("aargh male screams")
       screamF: [1, 2, 3, 4].map((i) => `scream_f${i}.mp3`), // female screams ("female screams")
       doll: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `doll_${i}.mp3`), // her singing voice (see sounds/voice-tools)
+      servo: ["head_servo.mp3"], // her head turning
     };
     const decoded = {}; // file -> AudioBuffer (or a promise while it loads)
     function loadSamples() {
@@ -722,7 +723,26 @@ Hub.register({
       src.connect(bp).connect(g).connect(bus.sfx);
       src.start(t);
     }
+    // Her head turning: the recorded servo (1.4 s), sped up a little and cut off with a short fade so it fits the turn
+    // (plus a short tail). Falls back to the made-in-code machinery below until the file has loaded.
+    function servoSound(dur) {
+      const a = audio();
+      const b = decoded["head_servo.mp3"];
+      if (!a || !(b instanceof AudioBuffer)) return false;
+      const t = a.currentTime, want = dur + 0.2; // seconds of sound
+      const rate = clamp(b.duration / want, 1, 1.6);
+      const len = Math.min(want, b.duration / rate);
+      const src = a.createBufferSource(); src.buffer = b; src.playbackRate.value = rate;
+      const g = a.createGain();
+      g.gain.setValueAtTime(0.8, t);
+      g.gain.setValueAtTime(0.8, t + Math.max(0.01, len - 0.08));
+      g.gain.linearRampToValueAtTime(0.0001, t + len);
+      src.connect(g).connect(bus.sfx);
+      src.start(t); src.stop(t + len + 0.05);
+      return true;
+    }
     function gearSound(dur) {
+      if (servoSound(dur)) return;
       const a = audio(); if (!a) return;
       const t0 = a.currentTime;
       if (!gritCurve) { gritCurve = new Float32Array(1024); for (let k = 0; k < 1024; k++) { const x = k / 512 - 1; gritCurve[k] = Math.tanh(x * 4); } }
