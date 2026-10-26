@@ -44,6 +44,9 @@ add a dated line under their heading below. Their Claude will mention it in chat
   set every character's `c.root` height back to 0 whenever it wasn't lying down, so a character placed up high
   (Red Light's snipers on their ledge) dropped to the floor. Now it only adds and removes its own lowering, and leaves
   any height your game sets alone. Glass Bridge wasn't affected (its archers sit inside their own group) and still loads.
+- 2026-10-26 (from Cougar): **`shared/input.js`: new optional setting `padJump`.** `Input.create(el, { padJump: 1 })`
+  makes B / ○ the controller jump button instead of A / ✕. Red Light uses it (A is sprint there). Without the setting
+  nothing changes, so Glass Bridge still jumps with A (tested: it loads and runs).
 
 ## Notes for Cougar
 
