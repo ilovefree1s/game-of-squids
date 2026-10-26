@@ -805,6 +805,7 @@ Hub.register({
       }
     }
     const judging = () => phase === "watch" && phaseT > GRACE;
+    const pastLine = (p) => p.mesh.position.z < START_Z; // behind the starting line you're not in play yet
 
     // Can she see p? Not if another standing player blocks both her view of p's head and chest.
     const EYE = new THREE.Vector3(0, 0.12, 1.6); // between her eyes, in head space
@@ -1155,7 +1156,7 @@ Hub.register({
       const wantPush = mine ? input.push() : !!(ctl && ctl.push);
       if (ok && wantPush && time - p.lastPush > PUSH_COOLDOWN) doPush(p);
       if (!ok) return;
-      if (judging() && (p.speed > MOVE_LIMIT || p.air) && seen(p)) caught(p); // (a jump counts as moving)
+      if (judging() && pastLine(p) && (p.speed > MOVE_LIMIT || p.air) && seen(p)) caught(p); // (a jump counts as moving)
       else if (P.z < FINISH_Z) finish(p);
     }
 
@@ -1305,7 +1306,7 @@ Hub.register({
       tone(150, 0.12, 0.08, "triangle");
       if (best) { noteHit(p, best, "push"); knock(best, fx, fz, PUSH_POWER, PUSH_DECAY, "push", p.id); }
       // shoving while she's watching gets you shot, if she can see you (hidden is hidden)
-      if (phase === "watch" && !p.out && !p.finished && seen(p)) caught(p, "shove");
+      if (phase === "watch" && !p.out && !p.finished && pastLine(p) && seen(p)) caught(p, "shove");
     }
 
     function knock(q, dx, dz, power, decay = KNOCK_DECAY, kind = "push", by = myId) {
@@ -1392,9 +1393,8 @@ Hub.register({
       const lis = me() && !me().dead ? me().mesh.position : camera.position;
       const far = Math.hypot(p.mesh.position.x - lis.x, p.mesh.position.z - lis.z);
       headshotSound(clamp(1.15 - far / 80, 0.3, 1));
-      // the announcer stops once every real player is out (or time's up): no reading out the rest
-      const realLeft = order.some((q) => !q.cpu && !q.dummy && !q.left && !q.out && !q.finished);
-      if (phase !== "over" && (realLeft || (!p.cpu && !p.dummy))) announce(`Player ${p.num}, eliminated.`);
+      // the announcer only reads out people (not computer players), and nothing once the game is over
+      if (!p.cpu && !p.dummy && phase !== "over" && !done) announce(`Player ${p.num}, eliminated.`);
       if (p.id === myId) {
         const traitor = p.betrayed && order.find((q) => q.id === p.by);
         say(`Player ${p.num}, eliminated.` + (traitor ? `\nBetrayed by ${traitor.name}` : ""), "bad");
