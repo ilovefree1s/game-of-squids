@@ -209,6 +209,7 @@ Hub.register({
       .rl-legend-h { font-weight: 700; color: #ffd34d; margin-bottom: 6px; }
       .rl-legend-row { margin-top: 6px; line-height: 1.35; }
       .rl-legend-ends { color: var(--muted); font-size: .8rem; }
+      .rl-rematch { width: 100%; margin: 0 0 10px; font-size: 1.1rem; font-weight: 800; }
       .rl-you { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: 10px; background: #14141f; }
       .rl-you.ok { box-shadow: inset 0 0 0 2px #2fbf71; } .rl-you.bad { box-shadow: inset 0 0 0 2px #e04848; }
       .rl-you-place { font-size: 2.6rem; font-weight: 800; line-height: 1; color: #ffd34d; }
@@ -1783,7 +1784,11 @@ Hub.register({
       lobby.innerHTML = "";
       lobby.hidden = false;
       const card = el("div", "rl-card");
-      card.append(el("h2", "", "Results"), resultsList(results));
+      const again = el("button", "rl-rematch", "🔁 Rematch");
+      again.onclick = () => { lobby.hidden = true; beginMatch(JSON.parse(JSON.stringify(lastMatch.roster)), "", lastMatch.minutes, lastMatch.gm); };
+      card.append(el("h2", "", "Results"));
+      if (lastMatch) card.append(again);
+      card.append(resultsList(results));
       const go = el("button", "", "Continue");
       go.onclick = () => { lobby.hidden = true; api.gameOver(); };
       card.append(go);
@@ -1859,8 +1864,10 @@ Hub.register({
 
     // load everything the match needs (max ~10s), then start
     let loadingMatch = false;
+    let lastMatch = null; // for Rematch: the same players (numbers, characters, CPU traits and alliances, start spots) and settings
     function beginMatch(roster, id = "", minutes = timeMin, gm = gameMode) {
       matchMode = gm === "one" ? "one" : "normal";
+      lastMatch = { roster: JSON.parse(JSON.stringify(roster)), minutes, gm: matchMode };
       if (loadingMatch) return;
       loadingMatch = true;
       matchId = id;
@@ -2165,6 +2172,20 @@ Hub.register({
       const card = el("div", "rl-card");
       const hostP = list[0];
       card.append(el("h2", "", `${hostP ? hostP.name : myName}'s lobby`));
+      if (results && lastMatch && hostP && room && hostP.id === room.id && !list.some((p) => p.inGame)) {
+        // Rematch: the same game again, right now. Players who've left since are dropped; anyone new waits for the next one.
+        const here = new Set(list.slice(0, MAX_ONLINE).map((p) => p.id));
+        const again = el("button", "rl-rematch", "🔁 Rematch");
+        again.onclick = () => {
+          const roster = JSON.parse(JSON.stringify(lastMatch.roster)).filter((r) => r.cpu || r.dummy || here.has(r.id));
+          const m = Math.random().toString(36).slice(2, 10);
+          room.send({ t: "start", m, roster, time: lastMatch.minutes, mode: lastMatch.gm });
+          room.update({ inGame: true });
+          incoming.clear(); asked.clear();
+          beginMatch(roster, m, lastMatch.minutes, lastMatch.gm);
+        };
+        card.append(again);
+      }
       if (results) {
         const ul = resultsList(results);
         card.append(el("label", "", "Last game"), ul);
