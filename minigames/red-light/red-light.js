@@ -768,7 +768,9 @@ Hub.register({
         lens.push(len);
         t += u;
       }
-      return { times, lens, kind, base: rand(500, 560), total: times[9] + lens[9] };
+      // she turns at a random moment between the last syllable starting to fade and it fully ending
+      const fadeFrom = times[9] + 0.025, end = times[9] + lens[9] + 0.05;
+      return { times, lens, kind, base: rand(500, 560), total: times[9] + lens[9], turnAt: fadeFrom + Math.random() * (end - fadeFrom) };
     }
 
     // Online, only the leader (the host) moves the doll from one phase to the next and tells everyone.
@@ -822,7 +824,7 @@ Hub.register({
           koSpans[sungUpTo].classList.add("on");
           roSpans[sungUpTo].classList.add("on");
         }
-        if (phaseT >= chant.total + 0.05 && leader()) setPhase("turn", TURN_TO);
+        if (phaseT >= (chant.turnAt ?? chant.total + 0.05) && leader()) setPhase("turn", TURN_TO);
       } else if (phase === "turn") { // spinning around: the head snaps first
         const t = clamp(phaseT / TURN_TO, 0, 1);
         setDoll(Math.PI * (1 - smooth(t)), Math.PI * (1 - smooth(Math.min(1, t * 1.5))));
@@ -2585,7 +2587,7 @@ Hub.register({
         // narrow (upright phone) screens: follow you straight on, a bit further back, so you stay in view
         const narrow = camera.aspect < 1;
         const UP = narrow ? 5.4 : 4.6, BACK = narrow ? 9.5 : 7.5, AHEAD = narrow ? 10 : 12, LOOK_Y = narrow ? 1.6 : 2.2;
-        const cx = narrow ? focus.x : focus.x * 0.7, lx = narrow ? focus.x : focus.x * 0.4;
+        const cx = focus.x, lx = focus.x; // always straight behind you, so you never end up off screen
         // look-around (same as Glass Bridge): while dragging, the camera swings around you; let go and it eases back
         if (!look.dragging) {
           look.yaw += (0 - look.yaw) * Math.min(1, dt * 5);
