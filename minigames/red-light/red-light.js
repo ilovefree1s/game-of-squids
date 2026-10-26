@@ -43,6 +43,10 @@ Hub.register({
     const TIME_CHOICES = [1, 2, 3, 4, 5]; // minutes the host can pick
     let timeMin = (() => { try { const t = +localStorage.getItem("rl:time"); return TIME_CHOICES.includes(t) ? t : 3; } catch { return 3; } })();
     let matchTime = timeMin * 60; // seconds on the clock for the game being played
+    // Game mode: "normal", or "one" = There Can Be Only One (the first across lives; everyone else is shot)
+    let gameMode = (() => { try { return localStorage.getItem("rl:mode") === "one" ? "one" : "normal"; } catch { return "normal"; } })();
+    let matchMode = "normal"; // the mode of the game being played
+    let oneWinner = null; // There Can Be Only One: who crossed first
     const COUNTDOWN = 3;
     const SPEED = 3.2; // full-speed run
     const STOP_RATE = 26; // how fast you stop when you let go (higher = quicker)
@@ -52,7 +56,7 @@ Hub.register({
     const TURN_AWAY = 0.8; // seconds to turn back to the tree
     const WATCH = [2.4, 4.6]; // how long she watches (random in this range)
     const SPRINT_SPEED = SPEED * 2; // double-tap and hold a direction to sprint
-    const SPRINT_STOP_RATE = STOP_RATE / 2; // ...and stopping from a sprint takes twice as long
+    const SPRINT_STOP_RATE = STOP_RATE / 2 / 1.33; // ...and you slide a third further than that when stopping from a sprint
     const TAP_GAP = 0.3; // seconds: how quick the double tap must be
     const BODY_R = 0.32; // players can't overlap closer than 2 x this (0.32 m = about 12.6 in)
     const SPRINT_KNOCK = 6.4; // sprinting into someone knocks them this hard (m/s): slides them about 3 ft
@@ -66,11 +70,11 @@ Hub.register({
     const MAX_CPUS = 50; // computer players, on top of the real ones
     const JUMP_V = 7, GRAVITY = 24; // same jump as Glass Bridge: about 3 ft high, a bit over ½ s in the air
     // [key, name, what it does, what 1 means, what 5 means] (matches the numbers in the CPU brain below)
-    const TRAITS = [["agg", "Aggression", "How often they go after a player closer to the finish, to shove them just before she turns",
+    const TRAITS = [["agg", "Aggression", "How often they go after someone nearby who isn't their ally, to shove them just before she turns (in There Can Be Only One: whoever is closest to the finish)",
         "never", "almost every round"],
       ["des", "Desperation", "How often they sprint (faster, but takes twice as long to stop)", "hardly ever", "almost every round"],
       ["cow", "Cowardice", "How long they wait before running, and how early in her song they stop",
-        "runs right away and keeps going until she turns", "waits about a second, and stops about a third of the way into the song"],
+        "runs right away and keeps going until she turns", "waits about 1 s, and stops about halfway through her song"],
       ["ref", "Reflexes", "How fast they stop when she starts to turn around",
         "about ½ s: often too slow, and shot", "under ¼ s: almost always stops in time"]];
     const SEND_EVERY = 0.1; // online: seconds between position updates
@@ -916,14 +920,17 @@ Hub.register({
       bone.getWorldQuaternion(tmpQ);
       return v.add(new THREE.Vector3(0, HEAD_UP, 0).applyQuaternion(tmpQ));
     }
+    const shotQueue = []; // caught, waiting for a sniper to finish reloading
     function fire(p) {
-      // the nearest sniper takes the shot
+      if (!snipers.length) return hit(p);
+      // the nearest sniper that's ready takes the shot; if they're all reloading, wait for the first one
       let best = null, bd = Infinity;
       snipers.forEach((sn) => {
-        const d = sn.root.position.distanceTo(p.mesh.position) + (sn.busy > 0 ? 40 : 0);
+        if (sn.busy > 0) return;
+        const d = sn.root.position.distanceTo(p.mesh.position);
         if (d < bd) { bd = d; best = sn; }
       });
-      if (!best) return hit(p);
+      if (!best) { if (!shotQueue.includes(p)) shotQueue.push(p); return; }
       const sn = best;
       sn.target = p;
       sn.busy = 1.6;
@@ -1079,6 +1086,9 @@ Hub.register({
       if (r.cpu) {
         p.traits = { agg: r.agg || 3, des: r.des || 3, cow: r.cow || 3, ref: r.ref || 3 };
         p.ai = { round: -1, laneX: clamp(rand(-FIELD_HALF + 2, FIELD_HALF - 2), -FIELD_HALF + 1, FIELD_HALF - 1) };
+        p.team = r.team || 0; // computer players' secret alliances (0 = on their own)
+        p.traitor = !!r.traitor; // ignores their alliance
+        p.risky = !!r.risky; // gets braver (less cowardly) as the clock runs down
       }
       p.mesh = makePlayerMesh(p, r.id === myId);
       const spread = Math.min(3, (FIELD_HALF * 2 - 6) / Math.max(1, n));
@@ -1194,11 +1204,12 @@ Hub.register({
     }
 
     // ---------- computer players ----------
-    // Traits 1-5. Aggression: how often they go after a player closer to the finish (they line up behind them and
-    // shove just before they think the song will end, so the victim is still sliding when she turns). Desperation:
-    // how much they sprint (more with little time left). Cowardice: how long they wait before running and how early
-    // they stop. Reflexes: how fast they stop when she turns. No inside information: they only know what a player
-    // could see and hear (her song so far, where everyone is).
+    // Traits 1-5. Aggression: how often they go after someone nearby who isn't their ally (they get behind them and
+    // shove just before they think the song will end, so the victim is still sliding when she turns). Only in
+    // There Can Be Only One do they go for whoever is closest to the finish. Desperation: how much they sprint.
+    // Cowardice: how long they wait before running and how early they stop. Reflexes: how fast they stop when she
+    // turns. As the clock runs down, everyone sprints and attacks more, and the "risky" ones (about 1 in 4) get less
+    // cowardly; reflexes never change. No inside information: they only know what a player could see and hear.
     const AGG_CHANCE = [0, 0.2, 0.4, 0.65, 0.9];
     const SPRINT_CHANCE = [0.05, 0.25, 0.45, 0.7, 0.9];
     const REACT = [[0.35, 0.55], [0.28, 0.45], [0.2, 0.36], [0.13, 0.27], [0.08, 0.18]]; // seconds, by Reflexes 1-5
@@ -1207,23 +1218,28 @@ Hub.register({
       const t = p.traits;
       // the clock makes everyone braver: +1 under 2 minutes, +2 under 1 minute, +3 under 30 seconds
       const nerve = (clockLeft < 120 ? 1 : 0) + (clockLeft < 60 ? 1 : 0) + (clockLeft < 30 ? 1 : 0);
-      a.go = time + Math.max(0, (t.cow - 1 - nerve) * 0.3) + rand(0, 0.35); // cowards wait longer before running
+      const cow = Math.max(0, (t.cow - 1) * 0.75 - (p.risky ? nerve : 0)); // (level 5 is 25% less timid than it was)
+      a.go = time + cow * 0.3 + rand(0, 0.35); // cowards wait longer before running
       // ...and stop earlier in the song. 10 = keep going until she turns, and count on stopping in time
-      a.stopAt = clamp(Math.round(10 - (t.cow - 1) * 1.7 + rand(-0.6, 0.6) + nerve), 2, 10);
+      a.stopAt = clamp(Math.round(10 - cow * 1.7 + rand(-0.6, 0.6)), 2, 10);
       a.sprint = Math.random() < Math.min(0.97, SPRINT_CHANCE[t.des - 1] + nerve * 0.12);
       const [r0, r1] = REACT[t.ref - 1];
       a.reaction = rand(r0, r1); // how long it takes them to notice she's turning (Reflexes)
       a.pushLead = rand(0.15, 0.45); // seconds before the song ends to shove
       a.target = null;
-      if (Math.random() < AGG_CHANCE[t.agg - 1]) {
+      if (Math.random() < Math.min(0.97, AGG_CHANCE[t.agg - 1] + (t.agg > 1 ? nerve * 0.1 : 0))) {
         const P = p.mesh.position, reach = 4 + t.agg * 3;
-        let best = null, bd = reach;
-        for (const q of order) { // someone closer to the finish, not too far away
-          if (q === p || q.out || q.dead || q.finished || q.left) continue;
+        const hunted = new Set(order.filter((q) => q.cpu && q !== p && q.ai && q.ai.target).map((q) => q.ai.target));
+        let best = null, bs = Infinity;
+        for (const q of order) {
+          if (q === p || q.out || q.dead || q.finished || q.left || hunted.has(q)) continue; // one hunter per target
+          if (p.team && q.team === p.team && !p.traitor) continue; // leave their allies alone (unless they're a traitor)
           const Q = q.mesh.position;
-          if (Q.z > P.z - 0.3) continue;
           const d = Math.hypot(Q.x - P.x, Q.z - P.z);
-          if (d < bd) { bd = d; best = q; }
+          if (d > reach) continue;
+          // There Can Be Only One: go for whoever is closest to the finish. Otherwise: anyone nearby, in any direction.
+          const score = matchMode === "one" ? Q.z : d + rand(0, 3);
+          if (score < bs) { bs = score; best = q; }
         }
         a.target = best;
       }
@@ -1256,6 +1272,7 @@ Hub.register({
       if (tg && (phase === "sing" || phase === "away")) {
         const Q = tg.mesh.position;
         gx = Q.x; gz = Q.z + 0.85; // line up right behind them
+        if (P.z < Q.z + 0.4 && Math.abs(P.x - Q.x) < 1.1) { gx = Q.x + (P.x >= Q.x ? 1.3 : -1.3); gz = Q.z; } // in front: go around
         const d = Math.hypot(Q.x - P.x, Q.z - P.z);
         if (d > 4 + p.traits.agg * 3) { a.target = null; return brain(p); } // got away
         if (d > 3) sprint = sprint || p.traits.des >= 3; // closing the gap
@@ -1419,13 +1436,15 @@ Hub.register({
         const h = p.lastHit;
         if (reason === "red" && h && time - h.at < KILL_CREDIT) { // shoved or bumped into getting caught
           p.cause = h.kind; p.by = h.by; p.betrayed = allies.has(h.by) || (p.id !== myId && h.by === myId && allied(p));
+          const k = order.find((q) => q.id === h.by);
+          if (p.team && k && k.team === p.team) p.betrayed = true; // shoved by a computer ally
         } else p.cause = reason;
         p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT);
       } else { p.cause = reason; p.distFt = Math.max(0, (START_Z - p.mesh.position.z) * FT); }
       const killer = p.by && order.find((q) => q.id === p.by);
       if (killer && (p.cause === "push" || p.cause === "bump")) killer.stats.kills.push(p.id);
       renderPlayers();
-      if (p.id === myId) say(reason === "shove" ? "She saw you shove…" : "She saw you move…", "bad");
+      if (p.id === myId && reason !== "one") say(reason === "shove" ? "She saw you shove…" : "She saw you move…", "bad");
       if (simLocal(p) && !p.dummy) send({ t: "caught", who: p.id, info: { cause: p.cause, by: p.by, betrayed: p.betrayed, distFt: p.distFt } });
       fire(p);
     }
@@ -1612,6 +1631,12 @@ Hub.register({
       if (p.finished || p.out) return;
       // after time's up you can still run (and cross), but it doesn't count: everyone left on the field is shot
       if (phase === "over" || clockLeft <= 0) return;
+      if (matchMode === "one") { // only the first one across counts, and the host decides who that was
+        if (oneWinner) return;
+        if (!leader()) { if (!p.crossSent && simLocal(p) && !p.dummy) { p.crossSent = true; send({ t: "cross", who: p.id }); } return; }
+        if (mode === "online") send({ t: "one", id: p.id });
+        return onlyOne(p);
+      }
       p.finished = true;
       p.finishLeft = clockLeft;
       renderPlayers();
@@ -1648,6 +1673,23 @@ Hub.register({
         else simulating = false;
       };
       chunk();
+    }
+    // There Can Be Only One: the winner lives, and the snipers shoot everyone else (8 at a time, as fast as they reload)
+    function onlyOne(w) {
+      if (oneWinner || done) return;
+      oneWinner = w;
+      w.finished = true;
+      w.finishLeft = clockLeft;
+      setPhase("over");
+      setDoll(0, 0);
+      setEyes(true);
+      chantEl.hidden = true;
+      buzzer();
+      say(w.id === myId ? "You made it across first! There can be only one. 🎉" : `${w.cpu ? w.num + " CPU" : w.name} crossed first. There can be only one.`, w.id === myId ? "good" : "bad");
+      renderPlayers();
+      order.filter((p) => p !== w && !p.finished && !p.out && !p.left).forEach((p) => caught(p, "one"));
+      const waitDone = () => { if (done) return; if (shotQueue.length || bolts.some((b) => !b.stuck)) return after(0.5, waitDone); after(2.5, () => { if (!done) endMatch(); }); };
+      after(1, waitDone);
     }
     function timeUp() {
       if (phase === "over") return;
@@ -1753,6 +1795,8 @@ Hub.register({
 
     function startMatch(roster, minutes = timeMin) {
       if (order.length) resetMatch();
+      oneWinner = null;
+      shotQueue.length = 0;
       matchTime = minutes * 60;
       order = roster.map((r, k) => addPlayer(r, k, roster.length));
       spawnSnipers();
@@ -1775,7 +1819,8 @@ Hub.register({
 
     // load everything the match needs (max ~10s), then start
     let loadingMatch = false;
-    function beginMatch(roster, id = "", minutes = timeMin) {
+    function beginMatch(roster, id = "", minutes = timeMin, gm = gameMode) {
+      matchMode = gm === "one" ? "one" : "normal";
       if (loadingMatch) return;
       loadingMatch = true;
       matchId = id;
@@ -1882,7 +1927,7 @@ Hub.register({
       lobbyListEl = el("ul", "rl-list");
       lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
 
-      card.append(timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
+      card.append(modePicker(), timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift, A / ✕ on a controller, or SPRINT on a phone, or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
           "Push: F · X / □ on a controller · PUSH on a phone. Jump (just for fun, but it counts as moving on a red light): Space · B / ○ · JUMP on a phone."));
@@ -1959,7 +2004,7 @@ Hub.register({
               roomNote = "Couldn't connect to the online server. Check your internet."; roomNoteBad = true; renderRoom(roomPlayers);
             }
           },
-        }, { char: myChar, num: myNum, cpus: cpuSetup, time: timeMin });
+        }, { char: myChar, num: myNum, cpus: cpuSetup, time: timeMin, mode: gameMode });
         myId = room.id;
       } catch (err) {
         roomNote = "Online play failed to start: " + err.message; roomNoteBad = true;
@@ -2006,7 +2051,7 @@ Hub.register({
         if (!data.roster.some((r) => r.id === myId)) { roomNote = "The game started without you (room full)."; roomNoteBad = true; return renderRoom(roomPlayers); }
         incoming.clear(); asked.clear(); // unanswered requests expire when the game starts
         room.update({ inGame: true });
-        return beginMatch(data.roster, data.m, data.time || 3);
+        return beginMatch(data.roster, data.m, data.time || 3, data.mode);
       }
       if (!started || data.m !== matchId) return; // not for this game
       const p = order.find((q) => q.id === (data.who || from)); // "who": a computer player the host runs
@@ -2029,6 +2074,16 @@ Hub.register({
           order.forEach((q) => { if (q.cpu && q.target) q.mesh.position.copy(q.target); });
           renderLight();
         }
+        return;
+      }
+      if (data.t === "one") { // There Can Be Only One: the host says who crossed first
+        const w = order.find((q) => q.id === data.id);
+        if (w) onlyOne(w);
+        return;
+      }
+      if (data.t === "cross") { // someone else's device: their player crossed (the host decides who was first)
+        const w = order.find((q) => q.id === data.who);
+        if (w && leader() && matchMode === "one" && !oneWinner && !w.out) { send({ t: "one", id: w.id }); onlyOne(w); }
         return;
       }
       if (data.t === "results") { // the host's complete results (computer players played out)
@@ -2121,8 +2176,11 @@ Hub.register({
       if (inGame) { note = "A game is running in this lobby. You'll join the next one."; bad = false; }
       else if (myIndex >= MAX_ONLINE) { note = `Room is full (${MAX_ONLINE} players).`; bad = true; }
       else if (myIndex >= 0 && !bad) note = iAmHost ? "You're the host 👑. Start when everyone's in." : "Waiting for the host to start…";
-      if (iAmHost && !inGame) card.append(timePicker(() => room.update({ time: timeMin })));
-      else if (hostP && hostP.time) card.append(el("div", "rl-row rl-time", `⏱ Time limit: ${hostP.time} minute${hostP.time === 1 ? "" : "s"}`));
+      if (iAmHost && !inGame) card.append(modePicker(() => room.update({ mode: gameMode })), timePicker(() => room.update({ time: timeMin })));
+      else {
+        if (hostP && hostP.mode === "one") card.append(el("div", "rl-row rl-time", "🎯 Mode: There Can Be Only One"));
+        if (hostP && hostP.time) card.append(el("div", "rl-row rl-time", `⏱ Time limit: ${hostP.time} minute${hostP.time === 1 ? "" : "s"}`));
+      }
       if (iAmHost && !inGame) {
         card.append(cpuPanel(cpuSetup, true, (soft) => { saveCpus(); room.update({ cpus: cpuSetup }); if (!soft) renderRoom(roomPlayers); }));
       } else if (hostP && hostP.cpus && hostP.cpus.count) {
@@ -2147,10 +2205,10 @@ Hub.register({
       roster.push(...cpuRoster(cpuSetup, roster.map((r) => r.num)));
       startSpots(roster);
       const m = Math.random().toString(36).slice(2, 10);
-      room.send({ t: "start", m, roster, time: timeMin });
+      room.send({ t: "start", m, roster, time: timeMin, mode: gameMode });
       room.update({ inGame: true });
       incoming.clear(); asked.clear();
-      beginMatch(roster, m, timeMin);
+      beginMatch(roster, m, timeMin, gameMode);
     }
 
     // The results of a game: how everyone did, how they died, and their shoving stats.
@@ -2159,7 +2217,7 @@ Hub.register({
     const ordinal = (n) => n + ([, "st", "nd", "rd"][(n % 100 >> 3) === 1 ? 0 : n % 10] || "th");
     function resultsList(rs) {
       const wrapEl = el("div", "rl-results");
-      const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game" };
+      const CAUSE = { red: "moved on red", shove: "shoved someone on red", time: "time ran out", left: "left the game", one: "someone else crossed first" };
       const byPlace = [...rs].sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || (b.ok ? (b.left || 0) - (a.left || 0) : 0) || b.distFt - a.distFt);
       const place = new Map(byPlace.map((r, i) => [r, i + 1]));
       const mine = rs.find((r) => r.mine);
@@ -2228,6 +2286,18 @@ Hub.register({
         const t = setup.list[i] || randomTraits();
         out.push({ id: "cpu" + i, name: "CPU", num, char: "tracksuit", cpu: true, agg: t.agg, des: t.des, cow: t.cow, ref: t.ref || 3 });
       }
+      // secret alliances among the computer players: groups of 2-3 (about 1 in 4 stay on their own),
+      // and about 1 in 5 will turn on their allies anyway
+      const shuffled = [...out].sort(() => Math.random() - 0.5);
+      let team = 0;
+      for (let i = 0; i < shuffled.length;) {
+        if (Math.random() < 0.25 || i === shuffled.length - 1) { i++; continue; }
+        const size = Math.min(shuffled.length - i, Math.random() < 0.5 ? 2 : 3);
+        team++;
+        for (let k = 0; k < size; k++) shuffled[i + k].team = team;
+        i += size;
+      }
+      out.forEach((r) => { r.traitor = Math.random() < 0.2; r.risky = Math.random() < 0.25; });
       return out;
     }
 
@@ -2299,8 +2369,31 @@ Hub.register({
         row.append(el("b", "", label), el("div", "", help + "."), el("div", "rl-legend-ends", `1: ${one} · 5: ${five}`));
         legend.append(row);
       });
-      legend.append(el("div", "rl-legend-row", "As the clock runs down, every computer player gets braver: they wait less, stop later and sprint more."));
+      legend.append(el("div", "rl-legend-row", "Alliances: computer players secretly team up in twos and threes and leave each other alone, but about 1 in 5 will turn on their allies anyway."));
+      legend.append(el("div", "rl-legend-row", "As the clock runs down, they all sprint and attack more, and about 1 in 4 of them get braver (less Cowardice). Reflexes never change."));
       box.append(legend);
+      return box;
+    }
+
+    // 🎯 game mode picker (solo, and the host in the lobby)
+    function modePicker(onChange) {
+      const box = el("div", "");
+      const row = el("div", "rl-row rl-time");
+      const sel = el("select");
+      sel.id = "rl-mode";
+      [["normal", "Normal"], ["one", "There Can Be Only One"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; if (v === gameMode) o.selected = true; sel.append(o); });
+      sel.addEventListener("keydown", (e) => e.stopPropagation());
+      const help = el("div", "rl-help", "");
+      const explain = () => (help.textContent = gameMode === "one" ? "The first one across lives. The moment someone crosses, everyone else is shot." : "Everyone who crosses before time runs out lives.");
+      sel.onchange = () => {
+        gameMode = sel.value;
+        try { localStorage.setItem("rl:mode", gameMode); } catch {}
+        explain();
+        if (onChange) onChange();
+      };
+      explain();
+      row.append(el("b", "who", "🎯 Mode"), sel);
+      box.append(row, help);
       return box;
     }
 
@@ -2436,6 +2529,7 @@ Hub.register({
           }
         }
       }
+      while (shotQueue.length && snipers.some((sn) => sn.busy <= 0)) fire(shotQueue.shift()); // reloaded: next in line
       // snipers turn to their target, then back to watching the field
       snipers.forEach((sn) => {
         sn.busy -= dt;
