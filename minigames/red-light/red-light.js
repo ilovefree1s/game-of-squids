@@ -18,7 +18,8 @@
 // Art: KayKit characters/props (shared/models.js). The doll, stage, music and sounds are original,
 // built in code (no image or sound files).
 //
-// Controls (shared/input.js): WASD / arrows / left stick / phone joystick. No jumping in this game.
+// Controls (shared/input.js): WASD / arrows / left stick / phone joystick. Space / A / phone JUMP to jump (just for
+// fun: a jump on a red light counts as moving).
 
 Hub.register({
   id: "red-light",
@@ -62,7 +63,8 @@ Hub.register({
     const KNOCK_DECAY = 7; // how fast a sprint bump wears off
     const DUMMIES = 4; // practice dummies (solo testing)
     const MAX_ONLINE = 8;
-    const MAX_CPUS = 12; // computer players, on top of the real ones
+    const MAX_CPUS = 50; // computer players, on top of the real ones
+    const JUMP_V = 7, GRAVITY = 24; // same jump as Glass Bridge: about 3 ft high, a bit over ½ s in the air
     const TRAITS = [["agg", "Aggression", "How often they try to kill players closer to the finish"],
       ["des", "Desperation", "How much they sprint"],
       ["cow", "Cowardice", "How long they wait to run, and how early they stop"],
@@ -121,9 +123,9 @@ Hub.register({
     style.textContent = `
       .rl { position: relative; width: 100%; user-select: none; -webkit-user-select: none; overflow: hidden; border-radius: 12px; }
       .rl canvas { display: block; width: 100%; touch-action: none; }
-      .rl .inp-jump:not(.inp-push):not(.rl-sprint) { display: none !important; } /* no jumping in this game */
       .rl .rl-sprint { position: absolute; z-index: 1; background: rgba(61,180,255,.75); color: #fff; pointer-events: auto; touch-action: none; }
       .rl .rl-sprint.down { background: rgba(61,180,255,1); }
+      .rl-cpu-all { font-weight: 700; color: #ffd34d; }
       .rl-follow { position: absolute; left: 50%; bottom: calc(var(--u) * 3 + 8px); transform: translateX(-50%); z-index: 1;
                    font-size: clamp(12px, calc(var(--u) * 2.8), 16px); padding: 6px 14px; }
       /* Everything on top of the game is sized from --u = 1% of the game area's height (set in resize()),
@@ -245,7 +247,7 @@ Hub.register({
     topEl.append(lightEl, chantEl);
     wrap.append(renderer.domElement, edgeEl, hud, topEl, msg, countEl);
     container.append(wrap);
-    const input = Input.create(wrap); // joystick + PUSH (the jump button is hidden by the CSS above)
+    const input = Input.create(wrap); // joystick + JUMP + PUSH (SPRINT is added just above PUSH)
     wrap.append(lobby);
     input.showTouch(false);
 
@@ -1066,6 +1068,7 @@ Hub.register({
       if (p.dead) kk.play("Death_A", { once: true, fade: 0.08 }); // (shared/models.js lays them on the ground)
       else if (p.pushT > 0) kk.play("Melee_Block_Attack", { once: true, speed: 1.6, fade: 0.05 }); // two-handed shove
       else if (p.hitT > 0) kk.play("Hit_A", { once: true, fade: 0.05 });
+      else if (p.air || (!simLocal(p) && p.target && p.target.y > 0.05)) kk.play("Jump_Idle", { fade: 0.08 });
       else if (p.finished) kk.play("Cheering");
       else if (p.speed > 2.2) kk.play("Running_A", { speed: clamp(p.speed / 3.4, 0.7, 1.9) });
       else if (p.speed > 0.25) kk.play("Walking_A", { speed: clamp(p.speed / 1.5, 0.6, 1.4) });
@@ -1084,12 +1087,12 @@ Hub.register({
     sprintBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); sprintBtnHeld = true; sprintBtn.classList.add("down"); });
     ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => sprintBtn.addEventListener(ev, () => { sprintBtnHeld = false; sprintBtn.classList.remove("down"); }));
     wrap.insertBefore(sprintBtn, lobby);
-    function placeSprintBtn() { // same spot and size as the player's JUMP button setting (shared phone layout)
-      let j = { x: 0.85, y: 0.8, size: 96 };
-      try { const l = JSON.parse(localStorage.getItem("inp:layout") || "null"); if (l && l.jump) j = l.jump; } catch {}
+    function placeSprintBtn() { // just above the PUSH button, same size (follows the player's phone layout)
+      let j = { x: 0.84, y: 0.6, size: 74 };
+      try { const l = JSON.parse(localStorage.getItem("inp:layout") || "null"); if (l && l.push) j = l.push; } catch {}
       sprintBtn.style.width = sprintBtn.style.height = j.size + "px";
       sprintBtn.style.left = `calc(${(j.x * 100).toFixed(2)}% - ${j.size / 2}px)`;
-      sprintBtn.style.top = `calc(${(j.y * 100).toFixed(2)}% - ${j.size / 2}px)`;
+      sprintBtn.style.top = `calc(${(j.y * 100).toFixed(2)}% - ${j.size * 1.5 + 10}px)`;
       sprintBtn.style.fontSize = Math.max(11, Math.round(j.size * 0.16)) + "px";
     }
     function showSprintBtn(on) { placeSprintBtn(); sprintBtn.hidden = !(on && input.isTouch); }
@@ -1126,6 +1129,8 @@ Hub.register({
       const { mv, len, sprint } = ctl || { mv: { x: 0, y: 0 }, len: 0, sprint: false };
       if (sprint) p.fromSprint = true;
       else if (len > 0.05) p.fromSprint = false;
+      const wantJump = mine ? input.jump() && ok : !!(ctl && ctl.jump);
+      if (wantJump && !p.air) { p.vy = JUMP_V; p.air = true; if (mine) tone(300, 0.08, 0.05, "triangle"); }
       const want = new THREE.Vector3(mv.x, 0, -mv.y).multiplyScalar(sprint ? SPRINT_SPEED : SPEED);
       const rate = len > 0.05 ? 10 : p.fromSprint ? SPRINT_STOP_RATE : STOP_RATE;
       p.vel.lerp(want, 1 - Math.exp(-dt * rate));
@@ -1136,6 +1141,10 @@ Hub.register({
       P.addScaledVector(p.vel, dt).addScaledVector(p.knock, (1 - kf) / kd);
       p.knock.multiplyScalar(kf);
       if (p.knock.lengthSq() < 0.0004) p.knock.set(0, 0, 0);
+      if (p.air) { // in the air: gravity, then land
+        P.y += p.vy * dt - 0.5 * GRAVITY * dt * dt; p.vy -= GRAVITY * dt; // (exact: same height at any frame rate)
+        if (P.y <= 0) { P.y = 0; p.vy = 0; p.air = false; }
+      }
       collide(p);
       P.x = clamp(P.x, -FIELD_HALF, FIELD_HALF);
       P.z = clamp(P.z, BACK_Z + 26, FRONT_Z - 3);
@@ -1146,7 +1155,7 @@ Hub.register({
       const wantPush = mine ? input.push() : !!(ctl && ctl.push);
       if (ok && wantPush && time - p.lastPush > PUSH_COOLDOWN) doPush(p);
       if (!ok) return;
-      if (judging() && p.speed > MOVE_LIMIT && seen(p)) caught(p);
+      if (judging() && (p.speed > MOVE_LIMIT || p.air) && seen(p)) caught(p); // (a jump counts as moving)
       else if (P.z < FINISH_Z) finish(p);
     }
 
@@ -1230,7 +1239,11 @@ Hub.register({
       let dx = gx - P.x, dz = gz - P.z;
       const len = Math.hypot(dx, dz) || 1;
       dx /= len; dz /= len;
-      return { mv: { x: dx, y: -dz }, len: 1, sprint, push };
+      // just for fun: a hop now and then while she sings, if they think the song has a while left
+      if (a.hopAt == null) a.hopAt = time + rand(3, 12);
+      let jump = false;
+      if (time >= a.hopAt) { a.hopAt = time + rand(4, 14); jump = phase === "sing" && guessSongLeft() > 1.5; }
+      return { mv: { x: dx, y: -dz }, len: 1, sprint, push, jump };
     }
 
     // Another player online: glide toward where their device last said they were.
@@ -1240,6 +1253,7 @@ Hub.register({
       const k = Math.min(1, dt * 12);
       P.x += (p.target.x - P.x) * k; // (height is left alone: a fallen body settles itself onto the ground)
       P.z += (p.target.z - P.z) * k;
+      if (!p.dead) P.y += (p.target.y - P.y) * Math.min(1, dt * 20); // jumps (a fallen body settles itself)
       if (!p.dead) p.mesh.rotation.y = lerpAngle(p.mesh.rotation.y, p.targetRy, dt * 12);
     }
 
@@ -1709,7 +1723,7 @@ Hub.register({
       showSprintBtn(true);
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
-      say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove · swipe to look around." : "WASD / arrows to move · Shift to sprint · F to push · drag to look around") +
+      say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove · JUMP to jump · swipe to look around." : "WASD / arrows to move · Shift to sprint · F to push · Space to jump · drag to look around") +
         "\nMove only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
@@ -1827,7 +1841,7 @@ Hub.register({
       card.append(timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift (phone: hold SPRINT), or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
-          "Push: F · X / □ on a controller · PUSH on a phone."));
+          "Push: F · X / □ on a controller · PUSH on a phone. Jump (just for fun, but it counts as moving on a red light): Space · A / ✕ · JUMP on a phone."));
       putCard(card, "menu", keepTop);
       if (typeof Net === "undefined" || typeof supabase === "undefined") {
         host.disabled = true;
@@ -1954,11 +1968,11 @@ Hub.register({
       const p = order.find((q) => q.id === (data.who || from)); // "who": a computer player the host runs
       if (data.t === "cpus") { // the host's computer players
         if (leader()) return;
-        data.list.forEach(([id, x, z, ry, sp]) => {
+        data.list.forEach(([id, x, z, ry, sp, y]) => {
           const q = order.find((o) => o.id === id);
           if (!q) return;
           if (!q.target) q.target = new THREE.Vector3();
-          q.target.set(x, 0, z); q.targetRy = ry; q.speed = sp;
+          q.target.set(x, y || 0, z); q.targetRy = ry; q.speed = sp;
         });
         return;
       }
@@ -1988,7 +2002,7 @@ Hub.register({
         return;
       } else if (data.t === "pos") {
         if (!p.target) p.target = new THREE.Vector3();
-        p.target.set(data.x, 0, data.z);
+        p.target.set(data.x, data.y || 0, data.z);
         p.targetRy = data.ry;
         p.speed = data.sp;
       } else if (data.t === "push") { p.pushT = 0.45; p.stats.pushes++; }
@@ -2175,6 +2189,28 @@ Hub.register({
       if (!setup.count) return box;
       const grid = el("div", "rl-cpu-grid");
       grid.append(el("span", ""), ...TRAITS.map(([, label, help]) => { const h = el("span", "rl-cpu-h", label); h.title = help; return h; }));
+      if (editable && setup.count > 1) { // quick settings: one change sets that trait for every computer player
+        grid.append(el("span", "rl-cpu-name rl-cpu-all", "All CPUs"));
+        TRAITS.forEach(([key]) => {
+          const vals = new Set(setup.list.slice(0, setup.count).map((t) => (t || {})[key]));
+          const sel = el("select");
+          sel.className = "rl-cpu-all";
+          const add = (v, txt) => { const o = el("option", "", txt); o.value = v; sel.append(o); return o; };
+          if (vals.size !== 1) add("", "mixed").selected = true;
+          add("rand", "🎲");
+          for (let v = 1; v <= 5; v++) { const o = add(v, String(v)); if (vals.size === 1 && vals.has(v)) o.selected = true; }
+          sel.addEventListener("keydown", (e) => e.stopPropagation());
+          sel.onchange = () => {
+            if (sel.value === "") return;
+            for (let i = 0; i < setup.count; i++) {
+              const t = setup.list[i] || (setup.list[i] = randomTraits());
+              t[key] = sel.value === "rand" ? randomTraits()[key] : +sel.value;
+            }
+            onChange(); // redraw so every row shows the new value
+          };
+          grid.append(sel);
+        });
+      }
       for (let i = 0; i < setup.count; i++) {
         const t = setup.list[i] || (setup.list[i] = randomTraits());
         grid.append(el("span", "rl-cpu-name", "CPU " + (i + 1)));
@@ -2322,9 +2358,9 @@ Hub.register({
         if (sendT <= 0) {
           sendT = SEND_EVERY;
           const P = mine.mesh.position;
-          send({ t: "pos", x: +P.x.toFixed(2), z: +P.z.toFixed(2), ry: +mine.mesh.rotation.y.toFixed(2), sp: +mine.speed.toFixed(2) });
+          send({ t: "pos", x: +P.x.toFixed(2), y: +P.y.toFixed(2), z: +P.z.toFixed(2), ry: +mine.mesh.rotation.y.toFixed(2), sp: +mine.speed.toFixed(2) });
           if (leader()) { // all my computer players in one message
-            const list = order.filter((q) => q.cpu && !q.dead).map((q) => [q.id, +q.mesh.position.x.toFixed(2), +q.mesh.position.z.toFixed(2), +q.mesh.rotation.y.toFixed(2), +q.speed.toFixed(2)]);
+            const list = order.filter((q) => q.cpu && !q.dead).map((q) => [q.id, +q.mesh.position.x.toFixed(2), +q.mesh.position.z.toFixed(2), +q.mesh.rotation.y.toFixed(2), +q.speed.toFixed(2), +q.mesh.position.y.toFixed(2)]);
             if (list.length) send({ t: "cpus", list });
           }
         }
