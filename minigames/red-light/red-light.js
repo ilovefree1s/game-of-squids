@@ -804,9 +804,10 @@ Hub.register({
         lens.push(len);
         t += u;
       }
-      // she turns at a random moment between the last syllable starting to fade and it fully ending
-      const fadeFrom = times[9] + 0.025, end = times[9] + lens[9] + 0.05;
-      return { times, lens, kind, base: rand(500, 560), total: times[9] + lens[9], turnAt: fadeFrom + Math.random() * (end - fadeFrom) };
+      // she turns only after the last syllable has fully ended, after a random pause of 0 to about half that
+      // syllable's length (0.1-0.6 s, depending on the tempo)
+      const end = times[9] + lens[9];
+      return { times, lens, kind, base: rand(500, 560), total: end, turnAt: end + 0.05 + Math.random() * lens[9] * 0.5 };
     }
 
     // Online, only the leader (the host) moves the doll from one phase to the next and tells everyone.
