@@ -530,6 +530,7 @@ Hub.register({
 
     let dollAngle = 0; // 0 = looking at the players
     let headAngle = 0;
+    dollBody.rotation.y = Math.PI; // her body always faces the tree; only her head turns (set in setDoll)
     function setDoll(bodyA, headA) {
       dollAngle = bodyA;
       headAngle = headA;
@@ -703,6 +704,27 @@ Hub.register({
       o.start(t); o.stop(t + dur + 0.1);
       noise(dur * 0.8, 0.05, "bandpass", 1800);
     }
+    // Her head turning: gears. A fast ratchet of clicks (speeding up, then slowing as the head stops) over a low
+    // grinding hum, with a heavy clunk when it locks in place.
+    function gearSound(dur) {
+      const a = audio(); if (!a) return;
+      const t0 = a.currentTime;
+      const clicks = Math.round(dur * 34);
+      for (let k = 0; k < clicks; k++) {
+        const u = k / clicks;
+        const when = dur * (u - 0.12 * Math.sin(Math.PI * u) / Math.PI); // a bit faster in the middle of the turn
+        noise(0.018, 0.16 * (0.6 + 0.4 * Math.sin(Math.PI * u)), "bandpass", 2600 + (k % 3) * 500, when);
+        if (k % 4 === 0) noise(0.03, 0.12, "lowpass", 500, when); // the bigger gear's tooth
+      }
+      const o = a.createOscillator(); o.type = "square";
+      o.frequency.setValueAtTime(48, t0); o.frequency.linearRampToValueAtTime(70, t0 + dur * 0.5); o.frequency.linearRampToValueAtTime(42, t0 + dur);
+      const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 300;
+      const g = a.createGain(); env(g, t0, 0.04, 0.16, dur);
+      o.connect(f).connect(g).connect(bus.sfx);
+      o.start(t0); o.stop(t0 + dur + 0.1);
+      noise(0.09, 0.3, "lowpass", 260, dur); // clunk: locked in place
+      tone(95, 0.12, 0.18, "triangle", dur);
+    }
     function lockOnSound() { tone(1320, 0.12, 0.09, "square"); tone(1760, 0.18, 0.08, "square", 0.1); }
     function scanTick() { tone(2400, 0.05, 0.025, "sine"); }
     function shotSound() { // crossbow: a twang and a whoosh
@@ -831,8 +853,8 @@ Hub.register({
         koSpans.forEach((s) => s.classList.remove("on"));
         roSpans.forEach((s) => s.classList.remove("on"));
       }
-      if (p === "turn") whirSound(TURN_TO);
-      if (p === "away") { roundNo++; sungUpTo = -1; whirSound(TURN_AWAY); eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; }); }
+      if (p === "turn") gearSound(TURN_TO);
+      if (p === "away") { roundNo++; sungUpTo = -1; gearSound(TURN_AWAY); eyes.forEach((e) => { e.iris.position.x = 0; e.pupil.position.x = 0; }); }
       if (p === "watch") lockOnSound();
       renderLight();
       if (mode === "online" && leader() && ["away", "sing", "turn", "watch"].includes(p)) {
@@ -852,7 +874,7 @@ Hub.register({
       phaseT += dt;
       if (phase === "away") { // turning her back to the players
         const t = clamp(phaseT / TURN_AWAY, 0, 1);
-        setDoll(Math.PI * smooth(t), Math.PI * smooth(Math.min(1, t * 1.3)));
+        setDoll(Math.PI, Math.PI * smooth(t)); // like the show: her body stays facing the tree, only her head turns
         if (t >= 1 && leader()) setPhase("sing");
       } else if (phase === "sing") {
         while (sungUpTo < 9 && phaseT >= chant.times[sungUpTo + 1]) {
@@ -865,7 +887,7 @@ Hub.register({
         if (phaseT >= (chant.turnAt ?? chant.total + 0.05) && leader()) setPhase("turn", TURN_TO);
       } else if (phase === "turn") { // spinning around: the head snaps first
         const t = clamp(phaseT / TURN_TO, 0, 1);
-        setDoll(Math.PI * (1 - smooth(t)), Math.PI * (1 - smooth(Math.min(1, t * 1.5))));
+        setDoll(Math.PI, Math.PI * (1 - smooth(t))); // only her head swivels round to face the players
         if (t >= 1 && leader()) setPhase("watch", rand(WATCH[0], WATCH[1]));
       } else if (phase === "watch") {
         // eyes and beam sweep across the field
@@ -1721,7 +1743,7 @@ Hub.register({
       w.finished = true;
       w.finishLeft = clockLeft;
       setPhase("over");
-      setDoll(0, 0);
+      setDoll(Math.PI, 0);
       setEyes(true);
       chantEl.hidden = true;
       buzzer();
@@ -1735,7 +1757,7 @@ Hub.register({
       if (phase === "over") return;
       if (mode === "online" && leader()) send({ t: "timeup" });
       setPhase("over");
-      setDoll(0, 0);
+      setDoll(Math.PI, 0);
       setEyes(true);
       chantEl.hidden = true;
       buzzer();
@@ -1829,7 +1851,7 @@ Hub.register({
       camera.updateProjectionMatrix();
       phase = "idle";
       setEyes(false);
-      setDoll(0, 0);
+      setDoll(Math.PI, 0);
       chantEl.hidden = true;
       lightEl.hidden = true;
       countEl.textContent = "";
@@ -1850,7 +1872,7 @@ Hub.register({
       clockLeft = matchTime;
       countdown = COUNTDOWN;
       lobby.hidden = true;
-      setDoll(0, 0); // she faces you while the clock counts down
+      setDoll(Math.PI, 0); // her head looks at you (body to the tree) while the clock counts down
       setPhase("pre");
       input.showTouch(true);
       showSprintBtn(true);
