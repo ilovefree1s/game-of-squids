@@ -21,3 +21,9 @@ scream_f1.mp3 - scream_f4.mp3 (female screams, for the Rogue, Hooded Rogue and S
 doll_0.mp3 - doll_9.mp3 (the doll's singing voice)
   Made for this game from the Korean text-to-speech voice "ko_KO kss_low" (Mycroft mimic3-voices, CC0),
   turned into a sung child-like voice. How: see voice-tools/README.txt.
+
+head_servo.mp3 (the doll's head turning)
+  "ROBOTIC_Transformation_Insect_01_Servos_Clicks_Digital_stereo.wav" from "Robotic Transformations" by Mekaal on
+  OpenGameArt.org. The page lists CC0 among its licenses and says "Use free in your commercial projects."
+  https://opengameart.org/content/robotic-transformations
+  Converted from .wav to .mp3.
