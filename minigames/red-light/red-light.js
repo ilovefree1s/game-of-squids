@@ -85,13 +85,13 @@ Hub.register({
     const START_Z = 0; // start line
     const FINISH_Z = -110; // finish line
     const DOLL_Z = -121;
-    const TREE_Z = -131;
+    const TREE_Z = -128.4; // right behind the doll: she leans on it
     const BACK_Z = -140;
     const FRONT_Z = 12;
     const WALL_X = 20;
     const WALL_H = 18;
     const DOLL_SIZE = 1.75; // the doll is about 20 tall
-    const BOARD_Y = 30; // the big clock floats high above the far wall
+    const BOARD_Y = 40; // the big clock floats high above the far wall (above the tree)
 
     // the chant: 무궁화 꽃이 피었습니다 (10 syllables)
     const KO = ["무", "궁", "화", "꽃", "이", "피", "었", "습", "니", "다"];
@@ -431,17 +431,18 @@ Hub.register({
 
     // the tree behind the doll (original: a round, leafy tree)
     const tree = new THREE.Group();
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.4, 9, 10), new THREE.MeshLambertMaterial({ color: 0x6b4a2f }));
-    trunk.position.y = 4.5;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.4, 13, 10), new THREE.MeshLambertMaterial({ color: 0x6b4a2f }));
+    trunk.position.y = 6.5;
     tree.add(trunk);
     const leafMat = new THREE.MeshLambertMaterial({ color: 0x4e9a45, flatShading: true });
-    [[0, 11, 0, 5], [-3.6, 9.4, 0.6, 3.6], [3.4, 9.8, -0.4, 3.8], [0.6, 13.6, -0.8, 3.4], [-1.8, 12.6, 2, 3]].forEach(([x, y, z, r]) => {
+    // the leaves sit high and toward the back, so they're above and behind her head
+    [[0, 15.5, -3.2, 5], [-4.4, 13.8, -2.4, 3.8], [4.2, 14.2, -2.8, 4], [0.6, 18.4, -3.6, 3.6], [-2, 17, -1.2, 3.2]].forEach(([x, y, z, r]) => {
       const b = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), leafMat);
       b.position.set(x, y, z);
       tree.add(b);
     });
     tree.position.set(0, 0, TREE_Z);
-    tree.scale.setScalar(1.6);
+    tree.scale.setScalar(1.75);
     scene.add(tree);
 
     // ---------- the doll (original design, built from simple shapes) ----------
@@ -481,7 +482,8 @@ Hub.register({
       add(arm, new THREE.SphereGeometry(0.55, 14, 10), dressMat, 0, 0, 0); // puffed sleeve
       add(arm, new THREE.CylinderGeometry(0.28, 0.26, 2.3, 12), porcelain, 0, -1.3, 0);
       add(arm, new THREE.SphereGeometry(0.33, 12, 10), porcelain, 0, -2.5, 0);
-      arm.rotation.z = s * 0.14;
+      arm.rotation.z = s * 0.1;
+      arm.rotation.x = -1.2; // reaching forward: her hands rest on the tree trunk
       dollBody.add(arm);
     }
     add(dollBody, new THREE.CylinderGeometry(0.45, 0.5, 0.6, 14), porcelain, 0, 8.2, 0); // neck
@@ -526,6 +528,7 @@ Hub.register({
     head.add(beam);
     doll.position.set(0, 0, DOLL_Z);
     doll.scale.setScalar(DOLL_SIZE);
+    doll.rotation.x = -0.1; // leaning in toward the tree
     scene.add(doll);
 
     let dollAngle = 0; // 0 = looking at the players
@@ -704,26 +707,55 @@ Hub.register({
       o.start(t); o.stop(t + dur + 0.1);
       noise(dur * 0.8, 0.05, "bandpass", 1800);
     }
-    // Her head turning: gears. A fast ratchet of clicks (speeding up, then slowing as the head stops) over a low
-    // grinding hum, with a heavy clunk when it locks in place.
+    // Her head turning: heavy machinery. A grinding motor (two low, detuned, distorted saws), a straining servo whine
+    // that rises and falls with the turn, irregular metal clanks of big gear teeth (ringing), and a heavy clunk with a
+    // hiss when the head locks in place.
+    let gritCurve = null;
+    function metalHit(when, freq, level, ring = 0.09) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + when;
+      const len = Math.floor(a.sampleRate * 0.02), buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+      for (let k = 0; k < len; k++) d[k] = (Math.random() * 2 - 1) * (1 - k / len);
+      const src = a.createBufferSource(); src.buffer = buf;
+      const bp = a.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = freq; bp.Q.value = 14; // rings like metal
+      const g = a.createGain(); env(g, t, 0.002, level, ring);
+      src.connect(bp).connect(g).connect(bus.sfx);
+      src.start(t);
+    }
     function gearSound(dur) {
       const a = audio(); if (!a) return;
       const t0 = a.currentTime;
-      const clicks = Math.round(dur * 34);
-      for (let k = 0; k < clicks; k++) {
-        const u = k / clicks;
-        const when = dur * (u - 0.12 * Math.sin(Math.PI * u) / Math.PI); // a bit faster in the middle of the turn
-        noise(0.018, 0.16 * (0.6 + 0.4 * Math.sin(Math.PI * u)), "bandpass", 2600 + (k % 3) * 500, when);
-        if (k % 4 === 0) noise(0.03, 0.12, "lowpass", 500, when); // the bigger gear's tooth
+      if (!gritCurve) { gritCurve = new Float32Array(1024); for (let k = 0; k < 1024; k++) { const x = k / 512 - 1; gritCurve[k] = Math.tanh(x * 4); } }
+      // motor
+      const motor = a.createGain(); env(motor, t0, 0.05, 0.22, dur + 0.05);
+      const shaper = a.createWaveShaper(); shaper.curve = gritCurve;
+      const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 700;
+      shaper.connect(lp).connect(motor).connect(bus.sfx);
+      for (const det of [0, 1.7]) {
+        const o = a.createOscillator(); o.type = "sawtooth";
+        o.frequency.setValueAtTime(38 + det, t0); o.frequency.linearRampToValueAtTime(58 + det, t0 + dur * 0.5); o.frequency.linearRampToValueAtTime(34 + det, t0 + dur);
+        const g = a.createGain(); g.gain.value = 0.5;
+        o.connect(g).connect(shaper); o.start(t0); o.stop(t0 + dur + 0.15);
       }
-      const o = a.createOscillator(); o.type = "square";
-      o.frequency.setValueAtTime(48, t0); o.frequency.linearRampToValueAtTime(70, t0 + dur * 0.5); o.frequency.linearRampToValueAtTime(42, t0 + dur);
-      const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 300;
-      const g = a.createGain(); env(g, t0, 0.04, 0.16, dur);
-      o.connect(f).connect(g).connect(bus.sfx);
-      o.start(t0); o.stop(t0 + dur + 0.1);
-      noise(0.09, 0.3, "lowpass", 260, dur); // clunk: locked in place
-      tone(95, 0.12, 0.18, "triangle", dur);
+      // servo whine
+      const w = a.createOscillator(); w.type = "square";
+      w.frequency.setValueAtTime(240, t0); w.frequency.linearRampToValueAtTime(420, t0 + dur * 0.55); w.frequency.linearRampToValueAtTime(210, t0 + dur);
+      const wbp = a.createBiquadFilter(); wbp.type = "bandpass"; wbp.frequency.value = 900; wbp.Q.value = 3;
+      const wg = a.createGain(); env(wg, t0, 0.06, 0.035, dur);
+      w.connect(wbp).connect(wg).connect(bus.sfx); w.start(t0); w.stop(t0 + dur + 0.1);
+      // gear teeth: irregular clanks, a little faster mid-turn
+      let when = rand(0.01, 0.04);
+      while (when < dur - 0.03) {
+        const u = when / dur;
+        metalHit(when, rand(520, 980), 0.22 * (0.6 + 0.4 * Math.sin(Math.PI * u)), rand(0.06, 0.12));
+        noise(0.025, 0.08, "lowpass", 300, when); // the thud under each clank
+        when += rand(0.05, 0.09) * (1.15 - 0.4 * Math.sin(Math.PI * u));
+      }
+      // locked: heavy clunk, a ringing hit and a short hiss of air
+      noise(0.14, 0.38, "lowpass", 180, dur);
+      tone(70, 0.18, 0.22, "triangle", dur);
+      metalHit(dur + 0.01, 420, 0.28, 0.25);
+      noise(0.22, 0.04, "highpass", 4000, dur + 0.04);
     }
     function lockOnSound() { tone(1320, 0.12, 0.09, "square"); tone(1760, 0.18, 0.08, "square", 0.1); }
     function scanTick() { tone(2400, 0.05, 0.025, "sine"); }
@@ -2754,7 +2786,7 @@ Hub.register({
     view.addEventListener("lostpointercapture", endLook);
     const SPECTATE_AFTER = 2.5; // seconds after you're shot
     // just in front of her face, at eye height (she's DOLL_SIZE times her model size)
-    const DOLL_EYES = new THREE.Vector3(0, (9.85 + 0.12) * DOLL_SIZE, DOLL_Z + 2.4 * DOLL_SIZE);
+    const DOLL_EYES = (() => { doll.updateMatrixWorld(true); return head.localToWorld(new THREE.Vector3(0, 0.12, 2.4)); })(); // (head facing the players)
     let debugCam = null; // testing only: a fixed camera
     let debugSteps = 1; // testing only: run the game faster than real time
 

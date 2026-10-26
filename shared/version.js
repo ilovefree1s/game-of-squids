@@ -1,7 +1,7 @@
 // Game version, shown in the bottom-right corner.
 // Bump this every time you merge a change, so everyone can tell if they have the newest version:
 //   bug fix -> 0.4.0 to 0.4.1     new feature -> 0.4.1 to 0.5.0
-const VERSION = "0.34.0";
+const VERSION = "0.34.1";
 
 document.addEventListener("DOMContentLoaded", () => {
   const el = document.getElementById("version");
