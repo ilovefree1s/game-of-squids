@@ -47,6 +47,11 @@ add a dated line under their heading below. Their Claude will mention it in chat
 - 2026-10-26 (from Cougar): **`shared/input.js`: new optional setting `padJump`.** `Input.create(el, { padJump: 1 })`
   makes B / ○ the controller jump button instead of A / ✕. Red Light uses it (A is sprint there). Without the setting
   nothing changes, so Glass Bridge still jumps with A (tested: it loads and runs).
+- 2026-10-27 (from Cougar): **All-time scores (new shared file `shared/scores.js`, one `<script>` line in `index.html`).**
+  Every mini-game can post results and show online all-time boards (quickest time, most wins, most kills, by mode).
+  Red Light uses it. Glass Bridge doesn't yet: if you want boards for it, it's two calls (see "All-time scores" in the
+  README). It needs a one-time database setup: `supabase/scores.sql`, pasted into the Supabase SQL Editor. Nothing
+  else in `shared/` changed; Glass Bridge still loads and runs.
 
 ## Notes for Cougar
 

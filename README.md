@@ -116,6 +116,20 @@ lobbies.hide();                                                  // when the hos
 `shared/config.js` holds the Supabase **publishable** key, which is safe to be public.
 Never commit the secret key (`sb_secret_...`).
 
+## All-time scores (online leaderboards)
+
+`shared/scores.js` stores every game's results in one Supabase table (`scores`), so each mini-game can have its own
+all-time boards (quickest time, most wins, most kills), split by mode or all modes together.
+
+```js
+Scores.post("glass-bridge", { mode: "show", player: "Sam", won: true, time_ms: 41230, kills: 0 }); // after a game
+const top = await Scores.board("glass-bridge", "time");          // quickest first ("*" = all modes together)
+const top = await Scores.board("glass-bridge", "wins", "show");  // or "kills"; rows: { player, games, wins, kills, best_ms }
+```
+
+One-time setup: run `supabase/scores.sql` in the Supabase project (Dashboard → SQL Editor → paste → Run).
+Players can read and add scores, but not change or delete them.
+
 ## 3D characters (KayKit)
 
 `shared/models.js` gives any 3D game animated characters from the KayKit packs.

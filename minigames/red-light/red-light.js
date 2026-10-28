@@ -209,6 +209,16 @@ Hub.register({
       .rl-legend-h { font-weight: 700; color: #ffd34d; margin-bottom: 6px; }
       .rl-legend-row { margin-top: 6px; line-height: 1.35; }
       .rl-legend-ends { color: var(--muted); font-size: .8rem; }
+      .rl-alltime { margin: 8px 0; } .rl-alltime > button { width: 100%; }
+      .rl-board { margin-top: 8px; padding: 10px; background: #14141f; border-radius: 8px; }
+      .rl-board-tabs { gap: 6px; } .rl-board-tabs button { flex: 1; padding: 6px 4px; font-size: .9rem; }
+      .rl-board-tabs button.on { background: #ffd34d; color: #111; }
+      .rl-board select { width: 100%; margin: 8px 0; }
+      .rl-board-list { margin: 0; padding: 0; list-style: none; }
+      .rl-board-list li { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px solid #2a2a3a; }
+      .rl-board-list .rl-rank { min-width: 1.8em; color: var(--muted); } .rl-board-list .rl-val { margin-left: auto; }
+      .rl-board-list li.me b { color: #ffd34d; }
+      .rl-board-list li.rl-board-msg { display: block; color: var(--muted); border: 0; }
       .rl-rematch { width: 100%; margin: 0 0 10px; font-size: 1.1rem; font-weight: 800; }
       .rl-you { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: 10px; background: #14141f; }
       .rl-you.ok { box-shadow: inset 0 0 0 2px #2fbf71; } .rl-you.bad { box-shadow: inset 0 0 0 2px #e04848; }
@@ -1836,6 +1846,7 @@ Hub.register({
       later(() => musicBox(true, 0.26), 800);
       results = hostResults || makeResults();
       results.forEach((r) => (r.mine = r.id === myId));
+      postMyScore();
       if (mode !== "online") { later(() => { musicBox(false); showSoloResults(); }, 3500); return; }
       if (leader()) send({ t: "results", results }, true); // complete results (with the computer players) for everyone
       // online: back to the lobby with the results; alliances don't carry over
@@ -1854,6 +1865,68 @@ Hub.register({
           stats: { ...p.stats, kills: p.stats.kills.map(nameOf) },
         }));
     }
+    // ---------- all-time scores (online, shared by everyone: shared/scores.js) ----------
+    let postedFor = null;
+    let scoreNote = ""; // e.g. "Type your name to put your scores on the board"
+    function postMyScore() {
+      const r = results && results.find((x) => x.mine);
+      if (!r || typeof Scores === "undefined" || postedFor === lastMatch) return;
+      postedFor = lastMatch;
+      const name = mode === "online" ? myName : savedName();
+      if (!name) { scoreNote = "Type your name in the menu to put your games on the 🏆 All-time board."; return; }
+      scoreNote = "";
+      const time = r.ok && r.left != null ? Math.round((matchTime - r.left) * 1000) : null;
+      Scores.post("red-light", {
+        mode: matchMode, player: name, won: !!r.ok, time_ms: time, kills: (r.stats && r.stats.kills || []).length,
+        extra: { online: mode === "online", players: results.filter((x) => !x.cpu).length, cpus: results.filter((x) => x.cpu).length, minutes: matchTime / 60 },
+      });
+    }
+    const fmtTime = (ms) => { const s = ms / 1000; return s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, "0")}`; };
+    // 🏆 button that opens the boards: Quickest (time to cross), Wins, Kills; all modes together or one mode
+    const boardView = { open: false, by: "time", mode: "*" }; // remembered while the menu / lobby redraws
+    function allTimeBoard() {
+      const box = el("div", "rl-alltime");
+      const open = el("button", "alt", "🏆 All-time scores");
+      const panel = el("div", "rl-board");
+      panel.hidden = !boardView.open;
+      let by = boardView.by, modeSel = boardView.mode;
+      const tabs = el("div", "rl-row rl-board-tabs");
+      const tabBtns = [["time", "⏱ Quickest"], ["wins", "✅ Wins"], ["kills", "☠ Kills"]].map(([k, t]) => {
+        const b = el("button", "alt", t); b.onclick = () => { by = boardView.by = k; draw(); }; tabs.append(b); return [k, b];
+      });
+      const ms = el("select");
+      [["*", "All modes"], ["normal", "Normal"], ["one", "There Can Be Only One"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; if (v === modeSel) o.selected = true; ms.append(o); });
+      ms.addEventListener("keydown", (e) => e.stopPropagation());
+      ms.onchange = () => { modeSel = boardView.mode = ms.value; draw(); };
+      const list = el("ol", "rl-board-list");
+      panel.append(tabs, ms, list);
+      const me = () => (mode === "online" ? myName : savedName());
+      async function draw() {
+        tabBtns.forEach(([k, b]) => b.classList.toggle("on", k === by));
+        list.innerHTML = "";
+        list.append(el("li", "rl-board-msg", "Loading…"));
+        try {
+          const rows = await Scores.board("red-light", by, modeSel);
+          list.innerHTML = "";
+          if (!rows.length) list.append(el("li", "rl-board-msg", "No scores yet. Be the first!"));
+          rows.forEach((r, i) => {
+            const v = by === "time" ? fmtTime(r.best_ms) : by === "wins" ? `${r.wins} win${r.wins === 1 ? "" : "s"} · ${r.games} played` : `${r.kills} kill${r.kills === 1 ? "" : "s"}`;
+            const li = el("li", r.player === me() ? "me" : "");
+            li.append(el("span", "rl-rank", `${i + 1}.`), el("b", "", r.player), el("span", "rl-val", v));
+            list.append(li);
+          });
+        } catch (e) {
+          list.innerHTML = "";
+          list.append(el("li", "rl-board-msg", e.setup ? "All-time scores aren't switched on yet: the scores table needs to be created in Supabase (supabase/scores.sql)." : "Couldn't load the scores. Are you online?"));
+        }
+      }
+      open.onclick = () => { panel.hidden = !panel.hidden; boardView.open = !panel.hidden; if (!panel.hidden) draw(); };
+      if (boardView.open) draw();
+      box.append(open, panel);
+      if (scoreNote) box.append(el("div", "rl-help", scoreNote));
+      return box;
+    }
+
     function showSoloResults() {
       lobby.innerHTML = "";
       lobby.hidden = false;
@@ -1862,7 +1935,7 @@ Hub.register({
       again.onclick = () => { lobby.hidden = true; beginMatch(JSON.parse(JSON.stringify(lastMatch.roster)), "", lastMatch.minutes, lastMatch.gm); };
       card.append(el("h2", "", "Results"));
       if (lastMatch) card.append(again);
-      card.append(resultsList(results));
+      card.append(resultsList(results), allTimeBoard());
       const go = el("button", "", "Continue");
       go.onclick = () => { lobby.hidden = true; api.gameOver(); };
       card.append(go);
@@ -2048,7 +2121,7 @@ Hub.register({
       lobbyListEl = el("ul", "rl-list");
       lobbyListEl.join = (code) => { const n = getName(); if (n) enterRoom(code, n); };
 
-      card.append(modePicker(), timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
+      card.append(allTimeBoard(), modePicker(), timePicker(), soloCpus, dumRow, solo, volumePanel(), el("label", "", "Play online · your name"), nameIn, host,
         el("label", "", "Open lobbies"), lobbyListEl, note, controls,
         el("div", "rl-help", "Move: WASD / arrows · left stick · phone joystick. Sprint: hold Shift, A / ✕ on a controller, or SPRINT on a phone, or double-tap a direction and hold it. Look around: drag the mouse, or swipe on a phone. " +
           "Push: F · X / □ on a controller · PUSH on a phone. Jump (just for fun, but it counts as moving on a red light): Space · B / ○ · JUMP on a phone."));
@@ -2262,7 +2335,7 @@ Hub.register({
       }
       if (results) {
         const ul = resultsList(results);
-        card.append(el("label", "", "Last game"), ul);
+        card.append(el("label", "", "Last game"), ul, allTimeBoard());
       }
       // someone asked me to ally
       const asks = list.filter((p) => incoming.has(p.id));
