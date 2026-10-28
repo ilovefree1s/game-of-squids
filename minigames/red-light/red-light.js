@@ -47,7 +47,8 @@ Hub.register({
     let gameMode = (() => { try { return localStorage.getItem("rl:mode") === "one" ? "one" : "normal"; } catch { return "normal"; } })();
     let matchMode = "normal"; // the mode of the game being played
     let oneWinner = null; // There Can Be Only One: who crossed first
-    const COUNTDOWN = 3;
+    const SCRAMBLE = 7; // seconds to fight for position behind the line before the 3-2-1
+    const COUNTDOWN = SCRAMBLE + 3; // you can move (sprint, push, jump) the whole time, but not past the starting line
     const SPEED = 3.2; // full-speed run
     const STOP_RATE = 26; // how fast you stop when you let go (higher = quicker)
     const MOVE_LIMIT = 0.1; // moving faster than this (m/s) while she watches = caught
@@ -177,6 +178,7 @@ Hub.register({
                 pointer-events: none; font-size: clamp(12px, calc(var(--u) * 3.2), 18px); text-shadow: 0 2px 6px #000; white-space: pre-line; }
       .rl-msg:not(:empty) { background: rgba(10,10,18,.62); padding: 6px 14px; border-radius: 10px; width: fit-content; max-width: 90%; }
       .rl-msg.bad { color: #ff6b6b; font-weight: 800; } .rl-msg.good { color: #3ddc84; font-weight: 800; }
+      .rl-count.small { font-size: clamp(16px, calc(var(--u) * 5), 34px) !important; place-items: start center; padding-top: calc(var(--u) * 16); }
       .rl-count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
                   font-size: clamp(36px, calc(var(--u) * 15), 96px); font-weight: 900; color: #ffcc33; text-shadow: 0 4px 20px #000; }
       .rl-lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -1288,7 +1290,7 @@ Hub.register({
       return { mv, len, sprint: (tap.sprint || shiftHeld || sprintBtnHeld || padSprint()) && held };
     }
 
-    const live = (p) => started && !done && countdown <= 0 && !p.out && !p.finished;
+    const live = (p) => started && !done && !p.out && !p.finished; // (during the countdown too: the scramble for position)
 
     // Move one player that this device is in charge of (you, or a practice dummy).
     function stepBody(p, dt, mine) {
@@ -1316,6 +1318,7 @@ Hub.register({
       collide(p);
       P.x = clamp(P.x, -FIELD_HALF, FIELD_HALF);
       P.z = clamp(P.z, BACK_Z + 26, FRONT_Z - 3);
+      if (countdown > 0) P.z = Math.max(P.z, START_Z + BODY_R); // before GO the starting line is a wall, even when shoved
       const mx = p.vel.x + p.knock.x, mz = p.vel.z + p.knock.z;
       p.speed = Math.hypot(mx, mz);
       const run = Math.hypot(p.vel.x, p.vel.z);
@@ -1375,9 +1378,32 @@ Hub.register({
       const beat = (heardAt[sungUpTo] - heardAt[0]) / sungUpTo;
       return heardAt[sungUpTo] + beat * (9 - sungUpTo) + beat - phaseT;
     }
+    // Before GO: scramble for a spot at the front. Desperate ones sprint there; aggressive ones shove whoever is in
+    // front of them (not their allies, unless they're a traitor).
+    function scrambleBrain(p) {
+      const a = p.ai, t = p.traits, P = p.mesh.position;
+      const none = { mv: { x: 0, y: 0 }, len: 0, sprint: false, push: false };
+      if (a.scrX == null) { a.scrX = clamp(P.x + rand(-3, 3), -FIELD_HALF + 1, FIELD_HALF - 1); a.shoveAt = time + rand(0.5, 3); a.hopAt = time + rand(1, 8); }
+      if (time >= a.shoveAt) {
+        a.shoveAt = time + rand(1.2, 3.5);
+        if (Math.random() < AGG_CHANCE[t.agg - 1]) {
+          const front = order.find((q) => q !== p && !q.left && !(p.team && q.team === p.team && !p.traitor) &&
+            Math.hypot(q.mesh.position.x - P.x, q.mesh.position.z - P.z) < PUSH_RANGE - 0.05 && q.mesh.position.z < P.z);
+          if (front) { p.mesh.rotation.y = faceAngle(front.mesh.position.x - P.x, front.mesh.position.z - P.z); return { ...none, push: true }; }
+        }
+      }
+      let jump = false;
+      if (time >= a.hopAt) { a.hopAt = time + rand(3, 9); jump = Math.random() < 0.5; }
+      const gx = a.scrX, gz = START_Z + BODY_R + 0.15; // the front row
+      let dx = gx - P.x, dz = gz - P.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.3) return { ...none, jump };
+      return { mv: { x: dx / d, y: -dz / d }, len: 1, sprint: d > 1.5 && t.des >= 3, push: false, jump };
+    }
     function brain(p) {
       const a = p.ai;
       const none = { mv: { x: 0, y: 0 }, len: 0, sprint: false, push: false };
+      if (countdown > 0) return scrambleBrain(p);
       if (a.round !== roundNo) { a.round = roundNo; newRound(p); }
       let moving = false;
       const tg0 = a.target;
@@ -2004,7 +2030,7 @@ Hub.register({
       musicBox(true);
       const touch = navigator.maxTouchPoints > 0;
       say((touch ? "Joystick to move · hold SPRINT to sprint · PUSH to shove · JUMP to jump · swipe to look around." : "WASD / arrows to move · Shift to sprint · F to push · Space to jump · drag to look around") +
-        "\nMove only while she sings. Freeze when she turns.");
+        "\nFight for your spot behind the line! Move only while she sings. Freeze when she turns.");
       renderPlayers();
       renderTimer();
     }
@@ -2702,8 +2728,10 @@ Hub.register({
           const before = Math.ceil(countdown);
           countdown -= dt;
           const now = Math.ceil(countdown);
-          countEl.textContent = countdown > 0 ? String(now) : "GO!";
-          if (now !== before && countdown > 0) tone(440, 0.2, 0.1);
+          const scramble = countdown > 3;
+          countEl.classList.toggle("small", scramble);
+          countEl.textContent = scramble ? `Get in position · ${now - 3}` : countdown > 0 ? String(now) : "GO!";
+          if (now !== before && countdown > 0 && now <= 3) tone(440, 0.2, 0.1);
           if (countdown <= 0) {
             musicBox(false);
             buzzer();
