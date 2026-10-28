@@ -52,6 +52,12 @@ add a dated line under their heading below. Their Claude will mention it in chat
   Red Light uses it. Glass Bridge doesn't yet: if you want boards for it, it's two calls (see "All-time scores" in the
   README). It needs a one-time database setup: `supabase/scores.sql`, pasted into the Supabase SQL Editor. Nothing
   else in `shared/` changed; Glass Bridge still loads and runs.
+- 2026-10-27 (from Cougar): **Cougar needs access to the Supabase project, for the all-time high scores.** His Supabase
+  account only shows his own organization ("Cougar Games"), not the Game of Squids project, even though he accepted an
+  invite earlier (it may have expired, or gone to a different email or login). Please invite him again to the exact email
+  he signs in to Supabase with, so the invite can be accepted within 24 hours. Until then, the scores can't work: the
+  one-time setup `supabase/scores.sql` has to be run in the project (SQL Editor → New query → paste → Run). Justin can
+  also just run it himself.
 
 ## Notes for Cougar
 
