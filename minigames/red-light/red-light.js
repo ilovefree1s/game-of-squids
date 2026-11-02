@@ -47,6 +47,7 @@ Hub.register({
     let gameMode = (() => { try { return localStorage.getItem("rl:mode") === "one" ? "one" : "normal"; } catch { return "normal"; } })();
     let matchMode = "normal"; // the mode of the game being played
     let oneWinner = null; // There Can Be Only One: who crossed first
+    let lineOpen = false; // the starting line is a wall until her first green light (set in setPhase)
     const START_RED = 1; // seconds of red light right after GO, before she turns to the tree and starts singing
     const SCRAMBLE = 7; // seconds to fight for position behind the line before the 3-2-1
     const COUNTDOWN = SCRAMBLE + 3; // you can move (sprint, push, jump) the whole time, but not past the starting line
@@ -913,6 +914,7 @@ Hub.register({
 
     function setPhase(p, len = 0, data = null) {
       phase = p;
+      if (p === "away") lineOpen = true; // her first green light: the starting line opens and the game is on
       phaseT = 0;
       phaseLen = len;
       setEyes(p === "watch");
@@ -1325,7 +1327,7 @@ Hub.register({
       collide(p);
       P.x = clamp(P.x, -FIELD_HALF, FIELD_HALF);
       P.z = clamp(P.z, BACK_Z + 26, FRONT_Z - 3);
-      if (countdown > 0) P.z = Math.max(P.z, START_Z + BODY_R); // before GO the starting line is a wall, even when shoved
+      if (!lineOpen) P.z = Math.max(P.z, START_Z + BODY_R); // until the first green light the starting line is a wall, even when shoved
       const mx = p.vel.x + p.knock.x, mz = p.vel.z + p.knock.z;
       p.speed = Math.hypot(mx, mz);
       const run = Math.hypot(p.vel.x, p.vel.z);
@@ -1410,7 +1412,7 @@ Hub.register({
     function brain(p) {
       const a = p.ai;
       const none = { mv: { x: 0, y: 0 }, len: 0, sprint: false, push: false };
-      if (countdown > 0) return scrambleBrain(p);
+      if (!lineOpen) return scrambleBrain(p);
       if (a.round !== roundNo) { a.round = roundNo; newRound(p); }
       let moving = false;
       const tg0 = a.target;
@@ -2021,6 +2023,7 @@ Hub.register({
       if (order.length) resetMatch();
       oneWinner = null;
       shotQueue.length = 0;
+      lineOpen = false;
       loadSamples(); // her voice, the squish and the screams (if they aren't loaded yet)
       matchTime = minutes * 60;
       order = roster.map((r, k) => addPlayer(r, k, roster.length));
