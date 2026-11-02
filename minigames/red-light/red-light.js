@@ -47,6 +47,7 @@ Hub.register({
     let gameMode = (() => { try { return localStorage.getItem("rl:mode") === "one" ? "one" : "normal"; } catch { return "normal"; } })();
     let matchMode = "normal"; // the mode of the game being played
     let oneWinner = null; // There Can Be Only One: who crossed first
+    const START_RED = 1; // seconds of red light right after GO, before she turns to the tree and starts singing
     const SCRAMBLE = 7; // seconds to fight for position behind the line before the 3-2-1
     const COUNTDOWN = SCRAMBLE + 3; // you can move (sprint, push, jump) the whole time, but not past the starting line
     const SPEED = 3.2; // full-speed run
@@ -874,23 +875,29 @@ Hub.register({
     const heardAt = []; // when each syllable of the current song was sung (phase time)
     let scanT = 0;
 
+    // Her song's tempo changes as she sings: it starts at a random speed, then each syllable drifts a little faster or
+    // slower than the one before (at most about 20% per syllable, often less, sometimes holding steady), so a song can
+    // speed up, slow down, or both, but always gradually. Fastest beat 0.15 s, slowest 0.68 s.
+    const U_MIN = 0.15, U_MAX = 0.68;
     function makeChant() {
-      const r = Math.random();
-      let unit, kind, times = [], lens = [];
-      if (r < 0.42) { kind = "normal"; unit = rand(0.36, 0.46); }
-      else if (r < 0.62) { kind = "fast"; unit = rand(0.15, 0.2); }
-      else if (r < 0.78) { kind = "slow"; unit = rand(0.55, 0.68); }
-      else kind = "slowfast";
+      let times = [], lens = [];
+      let u = rand(0.2, 0.6);
+      let drift = rand(-0.1, 0.1); // the current trend: speeding up (-) or slowing down (+)
       let t = 0;
       for (let i = 0; i < 10; i++) {
-        let u = unit;
-        if (kind === "slowfast") u = i < 7 ? 0.56 : 0.15;
-        if (WORD_END.includes(i - 1) && kind !== "fast") t += u * 0.35; // little breath between words
+        if (i > 0) {
+          drift = clamp(drift + rand(-0.1, 0.1), -0.2, 0.2);
+          if (Math.random() < 0.25) drift *= 0.3; // now and then it settles
+          u = clamp(u * (1 + drift), U_MIN, U_MAX);
+          if (u === U_MIN || u === U_MAX) drift = -drift * 0.5; // bounce off the limits instead of sticking there
+        }
+        if (WORD_END.includes(i - 1)) t += u * 0.35; // little breath between words
         times.push(t);
         const len = i === 9 ? u * 1.7 : u * 0.92;
         lens.push(len);
         t += u;
       }
+      const kind = "drift";
       // she turns only after the last syllable has fully ended, after a random pause of 0 to about half that
       // syllable's length (0.1-0.6 s, depending on the tempo)
       const end = times[9] + lens[9];
@@ -2737,7 +2744,7 @@ Hub.register({
             buzzer();
             later(() => (countEl.textContent = ""), 700);
             say(""); // the how-to line only shows during the countdown
-            if (leader()) setPhase("away", TURN_AWAY); // online: everyone else waits for the host's doll
+            if (leader()) setPhase("watch", START_RED); // red light first: she's watching for a second, then turns away
           }
         } else if (phase !== "over") {
           clockLeft -= dt;
